@@ -41,8 +41,19 @@ export default function HomePage() {
 
   const [highlights, setHighlights] = useState({}) // key -> color
   const [notes, setNotes] = useState([])
-  const [draftNote, setDraftNote] = useState('')
+  const [replies, setReplies] = useState({}) // note_id -> [reply, ...]
   const [bookmark, setBookmark] = useState(null)
+
+  // Note draft
+  const [draftText, setDraftText] = useState('')
+  const [draftImageFile, setDraftImageFile] = useState(null)
+  const [draftLinkOn, setDraftLinkOn] = useState(false)
+  const [draftLink, setDraftLink] = useState({ book: 'Genesis', chapter: 1, verse: 1, type: 'cross-ref' })
+  const [saving, setSaving] = useState(false)
+
+  // Reply drafts
+  const [replyDraftFor, setReplyDraftFor] = useState(null)
+  const [replyText, setReplyText] = useState('')
 
   const loadData = useCallback(async (uid) => {
     const { data: hl } = await supabase.from('highlights').select('*').eq('user_id', uid)
@@ -53,6 +64,20 @@ export default function HomePage() {
     const { data: nt } = await supabase.from('notes').select('*').order('created_at', { ascending: false })
     setNotes(nt || [])
 
+    if (nt && nt.length > 0) {
+      const { data: rp } = await supabase
+        .from('note_replies')
+        .select('*')
+        .in('note_id', nt.map((n) => n.id))
+        .order('created_at', { ascending: true })
+      const map = {}
+      ;(rp || []).forEach((r) => {
+        if (!map[r.note_id]) map[r.note_id] = []
+        map[r.note_id].push(r)
+      })
+      setReplies(map)
+    }
+
     const { data: bm } = await supabase.from('bookmarks').select('*').eq('user_id', uid).maybeSingle()
     setBookmark(bm || null)
   }, [supabase])
@@ -62,12 +87,7 @@ export default function HomePage() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/login'); return }
       setUser(user)
-
       const { data: prof } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle()
-      if (!prof || !prof.family_id) {
-        // First time here, or no family yet — send them to set one up.
-        // (Comment out this redirect if you'd rather let people skip it entirely.)
-      }
       setProfile(prof)
       await loadData(user.id)
       setLoading(false)
@@ -88,18 +108,54 @@ export default function HomePage() {
     }
   }
 
+  async function uploadNoteImage(file) {
+    const ext = file.name.split('.').pop()
+    const path = `${user.id}/${Date.now()}.${ext}`
+    const { error: upErr } = await supabase.storage.from('note-images').upload(path, file)
+    if (upErr) throw upErr
+    const { data } = supabase.storage.from('note-images').getPublicUrl(path)
+    return data.publicUrl
+  }
+
   async function addNote() {
-    if (!draftNote.trim() || !selectedVerse || !user) return
-    const { data, error } = await supabase.from('notes').insert({
-      user_id: user.id,
-      family_id: profile?.family_id || null,
-      scope,
-      book, chapter, verse: selectedVerse,
-      text: draftNote.trim(),
+    if (!draftText.trim() || !selectedVerse || !user) return
+    setSaving(true)
+    try {
+      let image_url = null
+      if (draftImageFile) {
+        image_url = await uploadNoteImage(draftImageFile)
+      }
+      const payload = {
+        user_id: user.id,
+        family_id: profile?.family_id || null,
+        scope,
+        book, chapter, verse: selectedVerse,
+        text: draftText.trim(),
+        image_url,
+        link_book: draftLinkOn ? draftLink.book : null,
+        link_chapter: draftLinkOn ? Number(draftLink.chapter) : null,
+        link_verse: draftLinkOn ? Number(draftLink.verse) : null,
+        link_type: draftLinkOn ? draftLink.type : null,
+      }
+      const { data, error } = await supabase.from('notes').insert(payload).select().single()
+      if (error) throw error
+      setNotes((n) => [data, ...n])
+      setDraftText(''); setDraftImageFile(null); setDraftLinkOn(false)
+    } catch (err) {
+      alert('Could not save note: ' + err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function addReply(noteId) {
+    if (!replyText.trim() || !user) return
+    const { data, error } = await supabase.from('note_replies').insert({
+      note_id: noteId, user_id: user.id, scope, text: replyText.trim(),
     }).select().single()
     if (!error && data) {
-      setNotes((n) => [data, ...n])
-      setDraftNote('')
+      setReplies((r) => ({ ...r, [noteId]: [...(r[noteId] || []), data] }))
+      setReplyText(''); setReplyDraftFor(null)
     }
   }
 
@@ -116,12 +172,18 @@ export default function HomePage() {
     router.push('/login')
   }
 
+  // Notes visible on a given verse: notes written directly on it, OR
+  // notes written elsewhere that link TO it (cross-reference/prophecy).
+  function notesForVerse(b, c, v) {
+    return notes.filter((n) =>
+      (n.book === b && n.chapter === c && n.verse === v) ||
+      (n.link_book === b && n.link_chapter === c && n.link_verse === v)
+    )
+  }
+
   if (loading) return <div style={{ padding: 40 }}>Loading...</div>
 
   const verses = BOOKS[book][chapter] || []
-  const notesForSelected = selectedVerse
-    ? notes.filter((n) => n.book === book && n.chapter === chapter && n.verse === selectedVerse)
-    : []
 
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', padding: 24 }}>
@@ -137,7 +199,7 @@ export default function HomePage() {
         </p>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <select value={book} onChange={(e) => { setBook(e.target.value); setChapter(chaptersFor(e.target.value)[0]); setSelectedVerse(null) }}>
           {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
@@ -153,6 +215,7 @@ export default function HomePage() {
       {verses.map((v) => {
         const key = vKey(book, chapter, v.n)
         const isSelected = selectedVerse === v.n
+        const notesHere = notesForVerse(book, chapter, v.n)
         return (
           <div key={v.n} style={{ marginBottom: 10 }}>
             <span
@@ -165,10 +228,11 @@ export default function HomePage() {
             >
               <sup style={{ opacity: 0.5, marginRight: 4 }}>{v.n}</sup>{v.t}
             </span>
+            {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6 }}>Notes: {notesHere.length}</span>}
 
             {isSelected && (
               <div style={{ marginTop: 8, background: '#f4f1ea', borderRadius: 8, padding: 12 }}>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
                   {Object.entries(HIGHLIGHTS).map(([name, color]) => (
                     <button key={name} onClick={() => toggleHighlight(name)}
                       style={{ width: 18, height: 18, borderRadius: '50%', background: color, border: '1px solid #0002', cursor: 'pointer' }} />
@@ -176,15 +240,78 @@ export default function HomePage() {
                   <button onClick={setBookmarkHere} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
                 </div>
 
-                {notesForSelected.map((n) => (
-                  <div key={n.id} style={{ fontSize: 13, marginBottom: 6, paddingBottom: 6, borderBottom: '1px solid #0001' }}>
-                    <div style={{ opacity: 0.6, fontSize: 11 }}>{new Date(n.created_at).toLocaleString()} · {n.scope}</div>
-                    {n.text}
-                  </div>
-                ))}
-                <textarea value={draftNote} onChange={(e) => setDraftNote(e.target.value)} placeholder={`Add a ${scope} note...`}
+                {notesHere.map((n) => {
+                  const isLinkedIn = !(n.book === book && n.chapter === chapter && n.verse === v.n)
+                  const otherRef = isLinkedIn
+                    ? { book: n.book, chapter: n.chapter, verse: n.verse }
+                    : (n.link_book ? { book: n.link_book, chapter: n.link_chapter, verse: n.link_verse } : null)
+                  return (
+                    <div key={n.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001' }}>
+                      <div style={{ opacity: 0.6, fontSize: 11 }}>{new Date(n.created_at).toLocaleString()} · {n.scope}</div>
+                      <div>{n.text}</div>
+                      {n.image_url && (
+                        <img src={n.image_url} alt="" style={{ maxWidth: '100%', borderRadius: 6, marginTop: 6 }} />
+                      )}
+                      {otherRef && (
+                        <div style={{ marginTop: 4, fontSize: 11, opacity: 0.7 }}>
+                          {isLinkedIn ? 'Linked from ' : (n.link_type === 'prophecy' ? 'Fulfilled in ' : 'Cross-ref to ')}
+                          {otherRef.book} {otherRef.chapter}:{otherRef.verse}
+                        </div>
+                      )}
+
+                      {(replies[n.id] || []).map((r) => (
+                        <div key={r.id} style={{ marginTop: 6, marginLeft: 12, borderLeft: '2px solid #0002', paddingLeft: 8, fontSize: 12 }}>
+                          <div style={{ opacity: 0.55, fontSize: 10 }}>{new Date(r.created_at).toLocaleString()} · {r.scope}</div>
+                          {r.text}
+                        </div>
+                      ))}
+                      {replyDraftFor === n.id ? (
+                        <div style={{ marginTop: 6, marginLeft: 12, display: 'flex', gap: 6 }}>
+                          <input value={replyText} onChange={(e) => setReplyText(e.target.value)}
+                            style={{ flex: 1, fontSize: 12, padding: 4 }} placeholder="Reply..." autoFocus />
+                          <button onClick={() => addReply(n.id)} style={{ fontSize: 12, cursor: 'pointer' }}>Send</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setReplyDraftFor(n.id); setReplyText('') }}
+                          style={{ marginTop: 6, marginLeft: 12, fontSize: 11, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer' }}>
+                          Reply
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+
+                <textarea value={draftText} onChange={(e) => setDraftText(e.target.value)} placeholder={`Add a ${scope} note...`}
                   style={{ width: '100%', minHeight: 50, boxSizing: 'border-box', marginBottom: 6 }} />
-                <button onClick={addNote} style={{ cursor: 'pointer' }}>Save note</button>
+
+                <div style={{ marginBottom: 6 }}>
+                  <label style={{ fontSize: 12, cursor: 'pointer' }}>
+                    Attach a photo
+                    <input type="file" accept="image/*" style={{ display: 'block', marginTop: 4 }}
+                      onChange={(e) => setDraftImageFile(e.target.files?.[0] || null)} />
+                  </label>
+                </div>
+
+                <label style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                  <input type="checkbox" checked={draftLinkOn} onChange={(e) => setDraftLinkOn(e.target.checked)} /> Link this note to another verse
+                </label>
+                {draftLinkOn && (
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                    <select value={draftLink.book} onChange={(e) => setDraftLink((d) => ({ ...d, book: e.target.value, chapter: chaptersFor(e.target.value)[0] }))}>
+                      {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                    <select value={draftLink.chapter} onChange={(e) => setDraftLink((d) => ({ ...d, chapter: Number(e.target.value) }))}>
+                      {chaptersFor(draftLink.book).map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <input type="number" min={1} value={draftLink.verse} onChange={(e) => setDraftLink((d) => ({ ...d, verse: e.target.value }))} style={{ width: 50 }} />
+                    <select value={draftLink.type} onChange={(e) => setDraftLink((d) => ({ ...d, type: e.target.value }))}>
+                      <option value="cross-ref">Cross-reference</option>
+                      <option value="prophecy">Prophecy - fulfilled here</option>
+                    </select>
+                  </div>
+                )}
+
+                <button onClick={addNote} disabled={saving} style={{ cursor: 'pointer' }}>{saving ? 'Saving...' : 'Save note'}</button>
               </div>
             )}
           </div>
