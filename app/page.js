@@ -25,6 +25,7 @@ const BOOK_LIST = Object.keys(BOOKS)
 const chaptersFor = (book) => Object.keys(BOOKS[book]).map(Number)
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
+const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
 
 export default function HomePage() {
   const router = useRouter()
@@ -33,6 +34,8 @@ export default function HomePage() {
   const [user, setUser] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+
+  const [tab, setTab] = useState('read') // 'read' | 'prayers'
 
   const [book, setBook] = useState('Psalms')
   const [chapter, setChapter] = useState(23)
@@ -43,6 +46,17 @@ export default function HomePage() {
   const [notes, setNotes] = useState([])
   const [replies, setReplies] = useState({}) // note_id -> [reply, ...]
   const [bookmark, setBookmark] = useState(null)
+
+  // Prayer list
+  const [prayers, setPrayers] = useState([])
+  const [showAnswered, setShowAnswered] = useState(false)
+  const [prayerTitle, setPrayerTitle] = useState('')
+  const [prayerDetails, setPrayerDetails] = useState('')
+  const [prayerCategory, setPrayerCategory] = useState('Family')
+  const [prayerShared, setPrayerShared] = useState(false)
+  const [prayerVerseOn, setPrayerVerseOn] = useState(false)
+  const [prayerVerse, setPrayerVerse] = useState({ book: 'Genesis', chapter: 1, verse: 1 })
+  const [savingPrayer, setSavingPrayer] = useState(false)
 
   // Note draft
   const [draftText, setDraftText] = useState('')
@@ -80,6 +94,9 @@ export default function HomePage() {
 
     const { data: bm } = await supabase.from('bookmarks').select('*').eq('user_id', uid).maybeSingle()
     setBookmark(bm || null)
+
+    const { data: pr } = await supabase.from('prayers').select('*').order('created_at', { ascending: false })
+    setPrayers(pr || [])
   }, [supabase])
 
   useEffect(() => {
@@ -177,6 +194,49 @@ export default function HomePage() {
     if (data) setBookmark(data)
   }
 
+  async function addPrayer() {
+    if (!prayerTitle.trim() || !user) return
+    setSavingPrayer(true)
+    try {
+      const payload = {
+        user_id: user.id,
+        family_id: profile?.family_id || null,
+        title: prayerTitle.trim(),
+        details: prayerDetails.trim() || null,
+        category: prayerCategory,
+        is_shared: prayerShared,
+        verse_book: prayerVerseOn ? prayerVerse.book : null,
+        verse_chapter: prayerVerseOn ? Number(prayerVerse.chapter) : null,
+        verse_verse: prayerVerseOn ? Number(prayerVerse.verse) : null,
+      }
+      const { data, error } = await supabase.from('prayers').insert(payload).select().single()
+      if (error) throw error
+      setPrayers((p) => [data, ...p])
+      setPrayerTitle(''); setPrayerDetails(''); setPrayerCategory('Family')
+      setPrayerShared(false); setPrayerVerseOn(false)
+    } catch (err) {
+      alert('Could not save prayer: ' + err.message)
+    } finally {
+      setSavingPrayer(false)
+    }
+  }
+
+  async function markPrayerAnswered(prayerId) {
+    const note = prompt('Optional: how was this prayer answered?') || null
+    const { data, error } = await supabase.from('prayers').update({
+      is_answered: true, answered_note: note, answered_at: new Date().toISOString(),
+    }).eq('id', prayerId).select().single()
+    if (error) { alert('Could not update prayer: ' + error.message); return }
+    setPrayers((p) => p.map((pr) => (pr.id === prayerId ? data : pr)))
+  }
+
+  async function deletePrayer(prayerId) {
+    if (!confirm('Delete this prayer?')) return
+    const { error } = await supabase.from('prayers').delete().eq('id', prayerId)
+    if (error) { alert('Could not delete prayer: ' + error.message); return }
+    setPrayers((p) => p.filter((pr) => pr.id !== prayerId))
+  }
+
   async function signOut() {
     await supabase.auth.signOut()
     router.push('/login')
@@ -197,11 +257,27 @@ export default function HomePage() {
 
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>Reading</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : 'Prayer List'}</h1>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer' }}>Sign out</button>
       </div>
 
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid #0002' }}>
+        <button onClick={() => setTab('read')}
+          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
+            borderBottom: tab === 'read' ? '2px solid #333' : '2px solid transparent',
+            fontWeight: tab === 'read' ? 600 : 400, fontSize: 14 }}>
+          Read
+        </button>
+        <button onClick={() => setTab('prayers')}
+          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
+            borderBottom: tab === 'prayers' ? '2px solid #333' : '2px solid transparent',
+            fontWeight: tab === 'prayers' ? 600 : 400, fontSize: 14 }}>
+          Prayers{prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}
+        </button>
+      </div>
+
+      {tab === 'read' && (<>
       {bookmark && (
         <p style={{ fontSize: 13, marginBottom: 16 }}>
           🔖 Resume: {bookmark.book} {bookmark.chapter}:{bookmark.verse}{' '}
@@ -332,6 +408,103 @@ export default function HomePage() {
           </div>
         )
       })}
+      </>)}
+
+      {tab === 'prayers' && (
+        <div>
+          <div style={{ background: '#f4f1ea', borderRadius: 8, padding: 12, marginBottom: 20 }}>
+            <h3 style={{ fontSize: 14, margin: '0 0 8px' }}>Add a prayer</h3>
+            <input value={prayerTitle} onChange={(e) => setPrayerTitle(e.target.value)} placeholder="What are you praying for?"
+              style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6, padding: 6 }} />
+            <textarea value={prayerDetails} onChange={(e) => setPrayerDetails(e.target.value)} placeholder="Details (optional)"
+              style={{ width: '100%', minHeight: 40, boxSizing: 'border-box', marginBottom: 6, padding: 6 }} />
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <select value={prayerCategory} onChange={(e) => setPrayerCategory(e.target.value)}>
+                {PRAYER_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <label style={{ fontSize: 12 }}>
+                <input type="checkbox" checked={prayerShared} onChange={(e) => setPrayerShared(e.target.checked)} /> Share with family
+              </label>
+            </div>
+
+            <label style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+              <input type="checkbox" checked={prayerVerseOn} onChange={(e) => setPrayerVerseOn(e.target.checked)} /> Link a Bible verse
+            </label>
+            {prayerVerseOn && (
+              <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+                <select value={prayerVerse.book} onChange={(e) => setPrayerVerse((d) => ({ ...d, book: e.target.value, chapter: chaptersFor(e.target.value)[0] }))}>
+                  {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+                <select value={prayerVerse.chapter} onChange={(e) => setPrayerVerse((d) => ({ ...d, chapter: Number(e.target.value) }))}>
+                  {chaptersFor(prayerVerse.book).map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <input type="number" min={1} value={prayerVerse.verse} onChange={(e) => setPrayerVerse((d) => ({ ...d, verse: e.target.value }))} style={{ width: 50 }} />
+              </div>
+            )}
+
+            <button onClick={addPrayer} disabled={savingPrayer} style={{ cursor: 'pointer' }}>
+              {savingPrayer ? 'Saving...' : 'Add prayer'}
+            </button>
+          </div>
+
+          <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Active</h3>
+          {prayers.filter((p) => !p.is_answered).length === 0 && (
+            <p style={{ fontSize: 13, opacity: 0.6 }}>No active prayers yet.</p>
+          )}
+          {prayers.filter((p) => !p.is_answered).map((p) => (
+            <div key={p.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <strong>{p.title}</strong>
+                <span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}{p.is_shared ? ' · Family' : ''}</span>
+              </div>
+              {p.details && <div style={{ marginTop: 2 }}>{p.details}</div>}
+              {p.verse_book && (
+                <div style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>
+                  📖 {p.verse_book} {p.verse_chapter}:{p.verse_verse}
+                </div>
+              )}
+              <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>{new Date(p.created_at).toLocaleDateString()}</div>
+              <div style={{ marginTop: 6, display: 'flex', gap: 12 }}>
+                {p.user_id === user.id && (
+                  <>
+                    <button onClick={() => markPrayerAnswered(p.id)} style={{ fontSize: 11, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer' }}>
+                      Mark answered
+                    </button>
+                    <button onClick={() => deletePrayer(p.id)} style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>
+                      Delete
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+
+          <div style={{ marginTop: 20 }}>
+            <button onClick={() => setShowAnswered((s) => !s)} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline' }}>
+              {showAnswered ? 'Hide' : 'Show'} answered prayers ({prayers.filter((p) => p.is_answered).length})
+            </button>
+            {showAnswered && prayers.filter((p) => p.is_answered).map((p) => (
+              <div key={p.id} style={{ fontSize: 13, marginTop: 10, paddingBottom: 10, borderBottom: '1px solid #0001', opacity: 0.75 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <strong>{p.title}</strong>
+                  <span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span>
+                </div>
+                {p.details && <div style={{ marginTop: 2 }}>{p.details}</div>}
+                {p.answered_note && <div style={{ marginTop: 4, fontStyle: 'italic' }}>✓ {p.answered_note}</div>}
+                <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>
+                  Answered {p.answered_at ? new Date(p.answered_at).toLocaleDateString() : ''}
+                </div>
+                {p.user_id === user.id && (
+                  <button onClick={() => deletePrayer(p.id)} style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer', marginTop: 6 }}>
+                    Delete
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
