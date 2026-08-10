@@ -26,6 +26,12 @@ const chaptersFor = (book) => Object.keys(BOOKS[book]).map(Number)
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
+const CHAPTER_SUMMARIES = {
+  'Genesis-1': 'God speaks the world into being over six days — light, sky, land, plants, sun and moon, sea creatures and birds, land animals, and finally people made in His image — then calls it all very good.',
+  'Psalms-23': "David pictures the LORD as a shepherd who provides, guides, and protects him through green pastures, dark valleys, and the presence of enemies, closing with confidence that God's goodness will follow him always.",
+  'John-3': 'Jesus tells Nicodemus that entering God\'s kingdom requires being "born again" by the Spirit, and explains that God sent His Son not to condemn the world but so that whoever believes in Him would have eternal life.',
+}
+const summaryKey = (b, c) => `${b}-${c}`
 
 export default function HomePage() {
   const router = useRouter()
@@ -41,6 +47,7 @@ export default function HomePage() {
   const [chapter, setChapter] = useState(23)
   const [scope, setScope] = useState('personal')
   const [selectedVerse, setSelectedVerse] = useState(null)
+  const [showSummary, setShowSummary] = useState(true)
 
   const [highlights, setHighlights] = useState({}) // key -> color
   const [notes, setNotes] = useState([])
@@ -334,6 +341,21 @@ export default function HomePage() {
           <option value="family">Family</option>
         </select>
       </div>
+
+      {CHAPTER_SUMMARIES[summaryKey(book, chapter)] && (
+        <div style={{ background: '#eef0e8', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
+          <div
+            onClick={() => setShowSummary((s) => !s)}
+            style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600 }}
+          >
+            <span>Chapter summary</span>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>{showSummary ? 'Hide' : 'Show'}</span>
+          </div>
+          {showSummary && (
+            <p style={{ margin: '8px 0 0', opacity: 0.85 }}>{CHAPTER_SUMMARIES[summaryKey(book, chapter)]}</p>
+          )}
+        </div>
+      )}
 
       {verses.map((v) => {
         const key = vKey(book, chapter, v.n)
