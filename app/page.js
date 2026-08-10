@@ -3,26 +3,53 @@ import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
-// Same small sample library as the prototype (public domain KJV).
-// Swap this out once the real Bible API is connected.
-const BOOKS = {
-  Genesis: { 1: [
-    { n: 1, t: 'In the beginning God created the heaven and the earth.' },
-    { n: 2, t: 'And the earth was without form, and void; and darkness was upon the face of the deep. And the Spirit of God moved upon the face of the waters.' },
-    { n: 3, t: 'And God said, Let there be light: and there was light.' },
-  ]},
-  Psalms: { 23: [
-    { n: 1, t: 'The LORD is my shepherd; I shall not want.' },
-    { n: 2, t: 'He maketh me to lie down in green pastures: he leadeth me beside the still waters.' },
-    { n: 3, t: "He restoreth my soul: he leadeth me in the paths of righteousness for his name's sake." },
-  ]},
-  John: { 3: [
-    { n: 16, t: 'For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life.' },
-    { n: 17, t: 'For God sent not his Son into the world to condemn the world; but that the world through him might be saved.' },
-  ]},
+// All 66 books of the Protestant canon, with their USFM code (used to
+// talk to the /api/bible route) and total chapter count (used to build
+// the chapter dropdown). Verse text itself is fetched live from
+// api.bible - see fetchChapter() and the chapterCache state below.
+const BOOK_META = [
+  { name: 'Genesis', usfm: 'GEN', chapters: 50 }, { name: 'Exodus', usfm: 'EXO', chapters: 40 },
+  { name: 'Leviticus', usfm: 'LEV', chapters: 27 }, { name: 'Numbers', usfm: 'NUM', chapters: 36 },
+  { name: 'Deuteronomy', usfm: 'DEU', chapters: 34 }, { name: 'Joshua', usfm: 'JOS', chapters: 24 },
+  { name: 'Judges', usfm: 'JDG', chapters: 21 }, { name: 'Ruth', usfm: 'RUT', chapters: 4 },
+  { name: '1 Samuel', usfm: '1SA', chapters: 31 }, { name: '2 Samuel', usfm: '2SA', chapters: 24 },
+  { name: '1 Kings', usfm: '1KI', chapters: 22 }, { name: '2 Kings', usfm: '2KI', chapters: 25 },
+  { name: '1 Chronicles', usfm: '1CH', chapters: 29 }, { name: '2 Chronicles', usfm: '2CH', chapters: 36 },
+  { name: 'Ezra', usfm: 'EZR', chapters: 10 }, { name: 'Nehemiah', usfm: 'NEH', chapters: 13 },
+  { name: 'Esther', usfm: 'EST', chapters: 10 }, { name: 'Job', usfm: 'JOB', chapters: 42 },
+  { name: 'Psalms', usfm: 'PSA', chapters: 150 }, { name: 'Proverbs', usfm: 'PRO', chapters: 31 },
+  { name: 'Ecclesiastes', usfm: 'ECC', chapters: 12 }, { name: 'Song of Solomon', usfm: 'SNG', chapters: 8 },
+  { name: 'Isaiah', usfm: 'ISA', chapters: 66 }, { name: 'Jeremiah', usfm: 'JER', chapters: 52 },
+  { name: 'Lamentations', usfm: 'LAM', chapters: 5 }, { name: 'Ezekiel', usfm: 'EZK', chapters: 48 },
+  { name: 'Daniel', usfm: 'DAN', chapters: 12 }, { name: 'Hosea', usfm: 'HOS', chapters: 14 },
+  { name: 'Joel', usfm: 'JOL', chapters: 3 }, { name: 'Amos', usfm: 'AMO', chapters: 9 },
+  { name: 'Obadiah', usfm: 'OBA', chapters: 1 }, { name: 'Jonah', usfm: 'JON', chapters: 4 },
+  { name: 'Micah', usfm: 'MIC', chapters: 7 }, { name: 'Nahum', usfm: 'NAM', chapters: 3 },
+  { name: 'Habakkuk', usfm: 'HAB', chapters: 3 }, { name: 'Zephaniah', usfm: 'ZEP', chapters: 3 },
+  { name: 'Haggai', usfm: 'HAG', chapters: 2 }, { name: 'Zechariah', usfm: 'ZEC', chapters: 14 },
+  { name: 'Malachi', usfm: 'MAL', chapters: 4 },
+  { name: 'Matthew', usfm: 'MAT', chapters: 28 }, { name: 'Mark', usfm: 'MRK', chapters: 16 },
+  { name: 'Luke', usfm: 'LUK', chapters: 24 }, { name: 'John', usfm: 'JHN', chapters: 21 },
+  { name: 'Acts', usfm: 'ACT', chapters: 28 }, { name: 'Romans', usfm: 'ROM', chapters: 16 },
+  { name: '1 Corinthians', usfm: '1CO', chapters: 16 }, { name: '2 Corinthians', usfm: '2CO', chapters: 13 },
+  { name: 'Galatians', usfm: 'GAL', chapters: 6 }, { name: 'Ephesians', usfm: 'EPH', chapters: 6 },
+  { name: 'Philippians', usfm: 'PHP', chapters: 4 }, { name: 'Colossians', usfm: 'COL', chapters: 4 },
+  { name: '1 Thessalonians', usfm: '1TH', chapters: 5 }, { name: '2 Thessalonians', usfm: '2TH', chapters: 3 },
+  { name: '1 Timothy', usfm: '1TI', chapters: 6 }, { name: '2 Timothy', usfm: '2TI', chapters: 4 },
+  { name: 'Titus', usfm: 'TIT', chapters: 3 }, { name: 'Philemon', usfm: 'PHM', chapters: 1 },
+  { name: 'Hebrews', usfm: 'HEB', chapters: 13 }, { name: 'James', usfm: 'JAS', chapters: 5 },
+  { name: '1 Peter', usfm: '1PE', chapters: 5 }, { name: '2 Peter', usfm: '2PE', chapters: 3 },
+  { name: '1 John', usfm: '1JN', chapters: 5 }, { name: '2 John', usfm: '2JN', chapters: 1 },
+  { name: '3 John', usfm: '3JN', chapters: 1 }, { name: 'Jude', usfm: 'JUD', chapters: 1 },
+  { name: 'Revelation', usfm: 'REV', chapters: 22 },
+]
+const BOOK_LIST = BOOK_META.map((b) => b.name)
+const usfmFor = (bookName) => BOOK_META.find((b) => b.name === bookName)?.usfm
+const chaptersFor = (book) => {
+  const meta = BOOK_META.find((b) => b.name === book)
+  return meta ? Array.from({ length: meta.chapters }, (_, i) => i + 1) : []
 }
-const BOOK_LIST = Object.keys(BOOKS)
-const chaptersFor = (book) => Object.keys(BOOKS[book]).map(Number)
+const chapterCacheKey = (book, chapter) => `${book}-${chapter}`
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
@@ -62,6 +89,11 @@ export default function HomePage() {
   const [splitReplyDraftFor, setSplitReplyDraftFor] = useState(null)
   const [splitReplyText, setSplitReplyText] = useState('')
 
+  // Live Bible text, fetched from /api/bible and cached by "Book-chapter"
+  // key so re-visiting a chapter (or both panes showing the same one)
+  // doesn't re-fetch. Shape: { [key]: { verses, loading, error, copyright } }
+  const [chapterCache, setChapterCache] = useState({})
+
   const [highlights, setHighlights] = useState({}) // key -> color
   const [notes, setNotes] = useState([])
   const [replies, setReplies] = useState({}) // note_id -> [reply, ...]
@@ -80,6 +112,8 @@ export default function HomePage() {
 
   // Search
   const [searchQuery, setSearchQuery] = useState('')
+  const [bibleSearchResults, setBibleSearchResults] = useState([])
+  const [bibleSearching, setBibleSearching] = useState(false)
 
   // Note draft
   const [draftText, setDraftText] = useState('')
@@ -139,6 +173,54 @@ export default function HomePage() {
     }
     init()
   }, [supabase, router, loadData])
+
+  // Fetches a chapter's verse text from /api/bible and stores it in
+  // chapterCache. Skips the fetch if we already have (or are already
+  // fetching) that chapter.
+  const fetchChapter = useCallback((book, chapter) => {
+    const key = chapterCacheKey(book, chapter)
+    setChapterCache((cache) => {
+      if (cache[key]) return cache // already loaded or loading
+      return { ...cache, [key]: { verses: [], loading: true, error: null, copyright: null } }
+    })
+    const usfm = usfmFor(book)
+    fetch(`/api/bible?book=${usfm}&chapter=${chapter}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.error) {
+          setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: data.error, copyright: null } }))
+        } else {
+          setChapterCache((cache) => ({ ...cache, [key]: { verses: data.verses || [], loading: false, error: null, copyright: data.copyright || null } }))
+        }
+      })
+      .catch((err) => {
+        setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: String(err), copyright: null } }))
+      })
+  }, [])
+
+  useEffect(() => {
+    if (book && chapter) fetchChapter(book, chapter)
+  }, [book, chapter, fetchChapter])
+
+  useEffect(() => {
+    if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter)
+  }, [splitOn, splitBook, splitChapter, fetchChapter])
+
+  // Debounced remote Bible search (300ms after typing stops) using
+  // api.bible's own search endpoint via /api/bible?q=...
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (!q) { setBibleSearchResults([]); setBibleSearching(false); return }
+    setBibleSearching(true)
+    const timer = setTimeout(() => {
+      fetch(`/api/bible?q=${encodeURIComponent(q)}`)
+        .then((res) => res.json())
+        .then((data) => setBibleSearchResults(data.results || []))
+        .catch(() => setBibleSearchResults([]))
+        .finally(() => setBibleSearching(false))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   async function toggleHighlight(color, b, c, v) {
     if (!v || !user) return
@@ -308,8 +390,17 @@ export default function HomePage() {
   // replies, bookmark) for a given pane's book/chapter/state. Used for both
   // the main pane and the split-view right pane so they share all features.
   function renderReadingPane(p) {
-    const verses = BOOKS[p.book][p.chapter] || []
-    return verses.map((v) => {
+    const entry = chapterCache[chapterCacheKey(p.book, p.chapter)]
+    if (!entry || entry.loading) {
+      return <p style={{ fontSize: 13, opacity: 0.6 }}>Loading {p.book} {p.chapter}...</p>
+    }
+    if (entry.error) {
+      return <p style={{ fontSize: 13, color: '#a33' }}>Couldn't load {p.book} {p.chapter}: {entry.error}</p>
+    }
+    const verses = entry.verses
+    return (
+      <>
+      {verses.map((v) => {
       const key = vKey(p.book, p.chapter, v.n)
       const isSelected = p.selectedVerse === v.n
       const notesHere = notesForVerse(p.book, p.chapter, v.n)
@@ -418,24 +509,12 @@ export default function HomePage() {
           )}
         </div>
       )
-    })
-  }
-
-  // Search across the sample Bible library
-  function searchBibleText(query) {
-    const q = query.trim().toLowerCase()
-    if (!q) return []
-    const results = []
-    for (const b of BOOK_LIST) {
-      for (const c of chaptersFor(b)) {
-        for (const v of BOOKS[b][c]) {
-          if (v.t.toLowerCase().includes(q)) {
-            results.push({ book: b, chapter: c, verse: v.n, text: v.t })
-          }
-        }
-      }
-    }
-    return results
+      })}
+      {entry.copyright && (
+        <p style={{ fontSize: 10, opacity: 0.5, marginTop: 12 }}>{entry.copyright}</p>
+      )}
+      </>
+    )
   }
 
   // Search saved notes (personal + any shared family notes already loaded)
@@ -705,13 +784,12 @@ export default function HomePage() {
           />
 
           {searchQuery.trim() && (() => {
-            const bibleResults = searchBibleText(searchQuery)
             const noteResults = searchNotes(searchQuery)
             return (
               <>
-                <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Bible verses ({bibleResults.length})</h3>
-                {bibleResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
-                {bibleResults.map((r) => (
+                <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Bible verses {bibleSearching ? '(searching...)' : `(${bibleSearchResults.length})`}</h3>
+                {!bibleSearching && bibleSearchResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
+                {bibleSearchResults.map((r) => (
                   <div key={`${r.book}-${r.chapter}-${r.verse}`}
                     onClick={() => jumpToVerse(r.book, r.chapter, r.verse)}
                     style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
