@@ -58,6 +58,9 @@ export default function HomePage() {
   const [prayerVerse, setPrayerVerse] = useState({ book: 'Genesis', chapter: 1, verse: 1 })
   const [savingPrayer, setSavingPrayer] = useState(false)
 
+  // Search
+  const [searchQuery, setSearchQuery] = useState('')
+
   // Note draft
   const [draftText, setDraftText] = useState('')
   const [draftImageFile, setDraftImageFile] = useState(null)
@@ -251,6 +254,34 @@ export default function HomePage() {
     )
   }
 
+  // Search across the sample Bible library
+  function searchBibleText(query) {
+    const q = query.trim().toLowerCase()
+    if (!q) return []
+    const results = []
+    for (const b of BOOK_LIST) {
+      for (const c of chaptersFor(b)) {
+        for (const v of BOOKS[b][c]) {
+          if (v.t.toLowerCase().includes(q)) {
+            results.push({ book: b, chapter: c, verse: v.n, text: v.t })
+          }
+        }
+      }
+    }
+    return results
+  }
+
+  // Search saved notes (personal + any shared family notes already loaded)
+  function searchNotes(query) {
+    const q = query.trim().toLowerCase()
+    if (!q) return []
+    return notes.filter((n) => n.text && n.text.toLowerCase().includes(q))
+  }
+
+  function jumpToVerse(b, c, v) {
+    setBook(b); setChapter(c); setSelectedVerse(v); setTab('read')
+  }
+
   if (loading) return <div style={{ padding: 40 }}>Loading...</div>
 
   const verses = BOOKS[book][chapter] || []
@@ -258,7 +289,7 @@ export default function HomePage() {
   return (
     <div style={{ maxWidth: 640, margin: '0 auto', padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : 'Prayer List'}</h1>
+        <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : 'Search'}</h1>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer' }}>Sign out</button>
       </div>
 
@@ -274,6 +305,12 @@ export default function HomePage() {
             borderBottom: tab === 'prayers' ? '2px solid #333' : '2px solid transparent',
             fontWeight: tab === 'prayers' ? 600 : 400, fontSize: 14 }}>
           Prayers{prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}
+        </button>
+        <button onClick={() => setTab('search')}
+          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
+            borderBottom: tab === 'search' ? '2px solid #333' : '2px solid transparent',
+            fontWeight: tab === 'search' ? 600 : 400, fontSize: 14 }}>
+          Search
         </button>
       </div>
 
@@ -503,6 +540,54 @@ export default function HomePage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {tab === 'search' && (
+        <div>
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search Bible text and your notes..."
+            autoFocus
+            style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 14, marginBottom: 20 }}
+          />
+
+          {searchQuery.trim() && (() => {
+            const bibleResults = searchBibleText(searchQuery)
+            const noteResults = searchNotes(searchQuery)
+            return (
+              <>
+                <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Bible verses ({bibleResults.length})</h3>
+                {bibleResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
+                {bibleResults.map((r) => (
+                  <div key={`${r.book}-${r.chapter}-${r.verse}`}
+                    onClick={() => jumpToVerse(r.book, r.chapter, r.verse)}
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
+                    <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>{r.book} {r.chapter}:{r.verse}</div>
+                    <div>{r.text}</div>
+                  </div>
+                ))}
+
+                <h3 style={{ fontSize: 15, margin: '20px 0 8px' }}>Your notes ({noteResults.length})</h3>
+                {noteResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
+                {noteResults.map((n) => (
+                  <div key={n.id}
+                    onClick={() => jumpToVerse(n.book, n.chapter, n.verse)}
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
+                    <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>
+                      {n.book} {n.chapter}:{n.verse} · {new Date(n.created_at).toLocaleDateString()} · {n.scope}
+                    </div>
+                    <div>{n.text}</div>
+                  </div>
+                ))}
+              </>
+            )
+          })()}
+
+          {!searchQuery.trim() && (
+            <p style={{ fontSize: 13, opacity: 0.6 }}>Start typing to search Bible verses and your saved notes.</p>
+          )}
         </div>
       )}
     </div>
