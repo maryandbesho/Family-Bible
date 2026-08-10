@@ -148,6 +148,16 @@ export default function HomePage() {
     }
   }
 
+  async function deleteNote(noteId) {
+    if (!confirm('Delete this note?')) return
+    const { error } = await supabase.from('notes').delete().eq('id', noteId)
+    if (error) {
+      alert('Could not delete note: ' + error.message)
+      return
+    }
+    setNotes((n) => n.filter((note) => note.id !== noteId))
+  }
+
   async function addReply(noteId) {
     if (!replyText.trim() || !user) return
     const { data, error } = await supabase.from('note_replies').insert({
@@ -247,7 +257,12 @@ export default function HomePage() {
                     : (n.link_book ? { book: n.link_book, chapter: n.link_chapter, verse: n.link_verse } : null)
                   return (
                     <div key={n.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001' }}>
-                      <div style={{ opacity: 0.6, fontSize: 11 }}>{new Date(n.created_at).toLocaleString()} · {n.scope}</div>
+                      <div style={{ opacity: 0.6, fontSize: 11, display: 'flex', justifyContent: 'space-between' }}>
+                        <span>{new Date(n.created_at).toLocaleString()} · {n.scope}</span>
+                        {n.user_id === user.id && (
+                          <button onClick={() => deleteNote(n.id)} style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>Delete</button>
+                        )}
+                      </div>
                       <div>{n.text}</div>
                       {n.image_url && (
                         <img src={n.image_url} alt="" style={{ maxWidth: '100%', borderRadius: 6, marginTop: 6 }} />
