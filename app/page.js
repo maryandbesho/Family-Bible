@@ -26,11 +26,6 @@ const chaptersFor = (book) => Object.keys(BOOKS[book]).map(Number)
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
-const CHAPTER_SUMMARIES = {
-  'Genesis-1': 'God speaks the world into being over six days — light, sky, land, plants, sun and moon, sea creatures and birds, land animals, and finally people made in His image — then calls it all very good.',
-  'Psalms-23': "David pictures the LORD as a shepherd who provides, guides, and protects him through green pastures, dark valleys, and the presence of enemies, closing with confidence that God's goodness will follow him always.",
-  'John-3': 'Jesus tells Nicodemus that entering God\'s kingdom requires being "born again" by the Spirit, and explains that God sent His Son not to condemn the world but so that whoever believes in Him would have eternal life.',
-}
 const summaryKey = (b, c) => `${b}-${c}`
 
 export default function HomePage() {
@@ -48,6 +43,15 @@ export default function HomePage() {
   const [scope, setScope] = useState('personal')
   const [selectedVerse, setSelectedVerse] = useState(null)
   const [showSummary, setShowSummary] = useState(true)
+  const [chapterSummaries, setChapterSummaries] = useState({}) // key -> {summary, updated_by, updated_at}
+  const [editingSummary, setEditingSummary] = useState(false)
+  const [summaryDraft, setSummaryDraft] = useState('')
+  const [savingSummary, setSavingSummary] = useState(false)
+
+  // Split view
+  const [splitOn, setSplitOn] = useState(false)
+  const [splitBook, setSplitBook] = useState('Genesis')
+  const [splitChapter, setSplitChapter] = useState(1)
 
   const [highlights, setHighlights] = useState({}) // key -> color
   const [notes, setNotes] = useState([])
@@ -107,6 +111,11 @@ export default function HomePage() {
 
     const { data: pr } = await supabase.from('prayers').select('*').order('created_at', { ascending: false })
     setPrayers(pr || [])
+
+    const { data: cs } = await supabase.from('chapter_summaries').select('*')
+    const csMap = {}
+    ;(cs || []).forEach((s) => { csMap[summaryKey(s.book, s.chapter)] = s })
+    setChapterSummaries(csMap)
   }, [supabase])
 
   useEffect(() => {
@@ -247,6 +256,31 @@ export default function HomePage() {
     setPrayers((p) => p.filter((pr) => pr.id !== prayerId))
   }
 
+  async function saveChapterSummary() {
+    if (!summaryDraft.trim() || !user) return
+    setSavingSummary(true)
+    try {
+      const payload = {
+        book, chapter,
+        summary: summaryDraft.trim(),
+        updated_by: user.id,
+        updated_at: new Date().toISOString(),
+      }
+      const { data, error } = await supabase
+        .from('chapter_summaries')
+        .upsert(payload, { onConflict: 'book,chapter' })
+        .select()
+        .single()
+      if (error) throw error
+      setChapterSummaries((m) => ({ ...m, [summaryKey(book, chapter)]: data }))
+      setEditingSummary(false)
+    } catch (err) {
+      alert('Could not save summary: ' + err.message)
+    } finally {
+      setSavingSummary(false)
+    }
+  }
+
   async function signOut() {
     await supabase.auth.signOut()
     router.push('/login')
@@ -294,7 +328,7 @@ export default function HomePage() {
   const verses = BOOKS[book][chapter] || []
 
   return (
-    <div style={{ maxWidth: 640, margin: '0 auto', padding: 24 }}>
+    <div style={{ maxWidth: splitOn ? 1000 : 640, margin: '0 auto', padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : 'Search'}</h1>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer' }}>Sign out</button>
@@ -329,7 +363,7 @@ export default function HomePage() {
         </p>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={book} onChange={(e) => { setBook(e.target.value); setChapter(chaptersFor(e.target.value)[0]); setSelectedVerse(null) }}>
           {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
@@ -340,22 +374,56 @@ export default function HomePage() {
           <option value="personal">Personal</option>
           <option value="family">Family</option>
         </select>
+        <button onClick={() => setSplitOn((s) => !s)}
+          style={{ marginLeft: 'auto', fontSize: 12, cursor: 'pointer' }}>
+          {splitOn ? '✕ Exit split view' : '⬛ Split view'}
+        </button>
       </div>
 
-      {CHAPTER_SUMMARIES[summaryKey(book, chapter)] && (
-        <div style={{ background: '#eef0e8', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
-          <div
-            onClick={() => setShowSummary((s) => !s)}
-            style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600 }}
-          >
-            <span>Chapter summary</span>
-            <span style={{ fontSize: 11, opacity: 0.6 }}>{showSummary ? 'Hide' : 'Show'}</span>
-          </div>
-          {showSummary && (
-            <p style={{ margin: '8px 0 0', opacity: 0.85 }}>{CHAPTER_SUMMARIES[summaryKey(book, chapter)]}</p>
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 300px', minWidth: 280 }}>
+
+      <div style={{ background: '#eef0e8', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span onClick={() => setShowSummary((s) => !s)} style={{ cursor: 'pointer', fontWeight: 600 }}>
+            Chapter summary {showSummary ? '▾' : '▸'}
+          </span>
+          {showSummary && !editingSummary && (
+            <button
+              onClick={() => { setSummaryDraft(chapterSummaries[summaryKey(book, chapter)]?.summary || ''); setEditingSummary(true) }}
+              style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline' }}
+            >
+              {chapterSummaries[summaryKey(book, chapter)] ? 'Edit' : 'Add summary'}
+            </button>
           )}
         </div>
-      )}
+
+        {showSummary && !editingSummary && (
+          chapterSummaries[summaryKey(book, chapter)]
+            ? <p style={{ margin: '8px 0 0', opacity: 0.85 }}>{chapterSummaries[summaryKey(book, chapter)].summary}</p>
+            : <p style={{ margin: '8px 0 0', opacity: 0.5, fontStyle: 'italic' }}>No summary yet for this chapter.</p>
+        )}
+
+        {showSummary && editingSummary && (
+          <div style={{ marginTop: 8 }}>
+            <textarea
+              value={summaryDraft}
+              onChange={(e) => setSummaryDraft(e.target.value)}
+              placeholder="Write a short summary of this chapter..."
+              autoFocus
+              style={{ width: '100%', minHeight: 70, boxSizing: 'border-box', fontSize: 13, padding: 6 }}
+            />
+            <div style={{ marginTop: 6, display: 'flex', gap: 10 }}>
+              <button onClick={saveChapterSummary} disabled={savingSummary} style={{ cursor: 'pointer', fontSize: 12 }}>
+                {savingSummary ? 'Saving...' : 'Save'}
+              </button>
+              <button onClick={() => setEditingSummary(false)} style={{ cursor: 'pointer', fontSize: 12, background: 'none', border: 'none', textDecoration: 'underline' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {verses.map((v) => {
         const key = vKey(book, chapter, v.n)
@@ -467,6 +535,27 @@ export default function HomePage() {
           </div>
         )
       })}
+
+      </div>
+
+      {splitOn && (
+        <div style={{ flex: '1 1 300px', minWidth: 280, borderLeft: '1px solid #0002', paddingLeft: 20 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <select value={splitBook} onChange={(e) => { setSplitBook(e.target.value); setSplitChapter(chaptersFor(e.target.value)[0]) }}>
+              {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+            <select value={splitChapter} onChange={(e) => setSplitChapter(Number(e.target.value))}>
+              {chaptersFor(splitBook).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          {(BOOKS[splitBook][splitChapter] || []).map((v) => (
+            <p key={v.n} style={{ fontSize: 14, marginBottom: 8, lineHeight: 1.5 }}>
+              <sup style={{ opacity: 0.5, marginRight: 4 }}>{v.n}</sup>{v.t}
+            </p>
+          ))}
+        </div>
+      )}
+      </div>
       </>)}
 
       {tab === 'prayers' && (
