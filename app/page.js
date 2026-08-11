@@ -114,6 +114,18 @@ export default function HomePage() {
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [splitThemeMenuOpen, setSplitThemeMenuOpen] = useState(false)
 
+  // Meditation mode - a full-screen, distraction-free guided flow for a
+  // single verse. Steps: 'read' -> 'pause' -> 'stands_out' -> 'apply' ->
+  // 'prayer' -> 'review' -> saved (closes). Answers become one note under
+  // the verse; a non-empty prayer answer also becomes a linked prayer.
+  const [meditationOn, setMeditationOn] = useState(false)
+  const [meditationTarget, setMeditationTarget] = useState(null) // { book, chapter, verse, text }
+  const [meditationStep, setMeditationStep] = useState('read')
+  const [meditationAnswers, setMeditationAnswers] = useState({ standsOut: '', apply: '', prayer: '' })
+  const [meditationSaving, setMeditationSaving] = useState(false)
+  const [meditationPauseLeft, setMeditationPauseLeft] = useState(45)
+  const meditationSteps = ['read', 'pause', 'stands_out', 'apply', 'prayer', 'review']
+
   // Prayer list
   const [prayers, setPrayers] = useState([])
   const [showAnswered, setShowAnswered] = useState(false)
@@ -369,6 +381,90 @@ export default function HomePage() {
 
   const allThemeNames = [...new Set(verseThemes.map((t) => t.theme))].sort((a, b) => a.localeCompare(b))
 
+  // --- Meditation mode ---
+
+  function startMeditation(book, chapter, verseNum, verseText) {
+    setMeditationTarget({ book, chapter, verse: verseNum, text: verseText })
+    setMeditationAnswers({ standsOut: '', apply: '', prayer: '' })
+    setMeditationStep('read')
+    setMeditationPauseLeft(45)
+    setMeditationOn(true)
+    if (typeof document !== 'undefined' && document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {})
+    }
+  }
+
+  function exitMeditation() {
+    setMeditationOn(false)
+    setMeditationTarget(null)
+    if (typeof document !== 'undefined' && document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {})
+    }
+  }
+
+  function meditationNext() {
+    const i = meditationSteps.indexOf(meditationStep)
+    if (i < meditationSteps.length - 1) setMeditationStep(meditationSteps[i + 1])
+  }
+
+  // Countdown for the quiet-reflection pause. Auto-advances when it hits 0.
+  useEffect(() => {
+    if (!meditationOn || meditationStep !== 'pause') return
+    if (meditationPauseLeft <= 0) { meditationNext(); return }
+    const t = setTimeout(() => setMeditationPauseLeft((s) => s - 1), 1000)
+    return () => clearTimeout(t)
+  }, [meditationOn, meditationStep, meditationPauseLeft])
+
+  // Saves the whole session as one note under the verse, and - if the
+  // "turn it into a prayer" step has text - also adds a linked prayer.
+  async function saveMeditation() {
+    if (!user || !meditationTarget) return
+    setMeditationSaving(true)
+    try {
+      const { standsOut, apply, prayer } = meditationAnswers
+      const parts = []
+      if (standsOut.trim()) parts.push(`What stood out: ${standsOut.trim()}`)
+      if (apply.trim()) parts.push(`How I can apply it: ${apply.trim()}`)
+      if (prayer.trim()) parts.push(`Turned into a prayer: ${prayer.trim()}`)
+
+      if (parts.length > 0) {
+        const text = `🧘 Meditation\n${parts.join('\n\n')}`
+        const payload = {
+          user_id: user.id,
+          family_id: profile?.family_id || null,
+          scope: 'personal',
+          book: meditationTarget.book, chapter: meditationTarget.chapter, verse: meditationTarget.verse,
+          text,
+        }
+        const { data, error } = await supabase.from('notes').insert(payload).select().single()
+        if (error) throw error
+        setNotes((n) => [data, ...n])
+      }
+
+      if (prayer.trim()) {
+        const { data: pData, error: pErr } = await supabase.from('prayers').insert({
+          user_id: user.id,
+          family_id: profile?.family_id || null,
+          title: `${meditationTarget.book} ${meditationTarget.chapter}:${meditationTarget.verse}`,
+          details: prayer.trim(),
+          category: 'Other',
+          is_shared: false,
+          verse_book: meditationTarget.book,
+          verse_chapter: meditationTarget.chapter,
+          verse_verse: meditationTarget.verse,
+        }).select().single()
+        if (pErr) throw pErr
+        setPrayers((p) => [pData, ...p])
+      }
+
+      exitMeditation()
+    } catch (err) {
+      alert('Could not save your meditation: ' + err.message)
+    } finally {
+      setMeditationSaving(false)
+    }
+  }
+
   async function addPrayer() {
     if (!prayerTitle.trim() || !user) return
     setSavingPrayer(true)
@@ -493,6 +589,9 @@ export default function HomePage() {
                 <button onClick={() => setBookmarkHere(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
                 <button onClick={() => p.setThemeMenuOpen(!p.themeMenuOpen)} style={{ fontSize: 12, cursor: 'pointer' }}>
                   🏷 Theme{themesForVerse(p.book, p.chapter, v.n).length > 0 ? ` (${themesForVerse(p.book, p.chapter, v.n).length})` : ''}
+                </button>
+                <button onClick={() => startMeditation(p.book, p.chapter, v.n, v.t)} style={{ fontSize: 12, cursor: 'pointer' }}>
+                  🧘 Meditate
                 </button>
               </div>
 
@@ -629,6 +728,114 @@ export default function HomePage() {
   }
 
   if (loading) return <div style={{ padding: 40 }}>Loading...</div>
+
+  if (meditationOn && meditationTarget) {
+    const stepIndex = meditationSteps.indexOf(meditationStep)
+    const mm = String(Math.floor(meditationPauseLeft / 60)).padStart(2, '0')
+    const ss = String(meditationPauseLeft % 60).padStart(2, '0')
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: '#f4f1ea', zIndex: 1000,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        padding: 24, boxSizing: 'border-box', textAlign: 'center',
+      }}>
+        <button onClick={exitMeditation}
+          style={{ position: 'absolute', top: 16, right: 20, fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', opacity: 0.6 }}>
+          ✕ Exit
+        </button>
+
+        <div style={{ maxWidth: 480, width: '100%' }}>
+          <p style={{ fontSize: 12, letterSpacing: 1, opacity: 0.5, marginBottom: 4 }}>
+            {meditationTarget.book} {meditationTarget.chapter}:{meditationTarget.verse}
+          </p>
+          <p style={{ fontSize: 22, lineHeight: 1.6, marginBottom: 28 }}>{meditationTarget.text}</p>
+
+          {meditationStep === 'read' && (
+            <>
+              <p style={{ fontSize: 13, opacity: 0.6, marginBottom: 20 }}>
+                Take a moment to read it slowly, maybe more than once.<br />
+                Consider turning on Do Not Disturb before you begin.
+              </p>
+              <button onClick={meditationNext} style={{ fontSize: 14, cursor: 'pointer', padding: '8px 20px' }}>Continue</button>
+            </>
+          )}
+
+          {meditationStep === 'pause' && (
+            <>
+              <p style={{ fontSize: 13, opacity: 0.6, marginBottom: 12 }}>Sit quietly with this verse for a moment...</p>
+              <p style={{ fontSize: 28, fontVariantNumeric: 'tabular-nums', marginBottom: 20 }}>{mm}:{ss}</p>
+              <button onClick={meditationNext} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline', opacity: 0.7 }}>
+                Skip ahead
+              </button>
+            </>
+          )}
+
+          {meditationStep === 'stands_out' && (
+            <>
+              <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>What about this verse stands out to you?</p>
+              <textarea value={meditationAnswers.standsOut}
+                onChange={(e) => setMeditationAnswers((a) => ({ ...a, standsOut: e.target.value }))}
+                autoFocus placeholder="Write freely..."
+                style={{ width: '100%', minHeight: 100, boxSizing: 'border-box', fontSize: 14, padding: 10, marginBottom: 16 }} />
+              <button onClick={meditationNext} style={{ fontSize: 14, cursor: 'pointer', padding: '8px 20px' }}>Next</button>
+            </>
+          )}
+
+          {meditationStep === 'apply' && (
+            <>
+              <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>How can you apply it to your life?</p>
+              <textarea value={meditationAnswers.apply}
+                onChange={(e) => setMeditationAnswers((a) => ({ ...a, apply: e.target.value }))}
+                autoFocus placeholder="Write freely..."
+                style={{ width: '100%', minHeight: 100, boxSizing: 'border-box', fontSize: 14, padding: 10, marginBottom: 16 }} />
+              <button onClick={meditationNext} style={{ fontSize: 14, cursor: 'pointer', padding: '8px 20px' }}>Next</button>
+            </>
+          )}
+
+          {meditationStep === 'prayer' && (
+            <>
+              <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Turn it into a prayer</p>
+              <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>This will be added to your Prayer List, linked to this verse.</p>
+              <textarea value={meditationAnswers.prayer}
+                onChange={(e) => setMeditationAnswers((a) => ({ ...a, prayer: e.target.value }))}
+                autoFocus placeholder="Lord, help me to..."
+                style={{ width: '100%', minHeight: 100, boxSizing: 'border-box', fontSize: 14, padding: 10, marginBottom: 16 }} />
+              <button onClick={meditationNext} style={{ fontSize: 14, cursor: 'pointer', padding: '8px 20px' }}>Next</button>
+            </>
+          )}
+
+          {meditationStep === 'review' && (
+            <>
+              <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Review before saving</p>
+              <div style={{ textAlign: 'left', fontSize: 13, marginBottom: 16 }}>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: 4, marginTop: 10 }}>What stood out</label>
+                <textarea value={meditationAnswers.standsOut}
+                  onChange={(e) => setMeditationAnswers((a) => ({ ...a, standsOut: e.target.value }))}
+                  style={{ width: '100%', minHeight: 60, boxSizing: 'border-box', fontSize: 13, padding: 8 }} />
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: 4, marginTop: 10 }}>How to apply it</label>
+                <textarea value={meditationAnswers.apply}
+                  onChange={(e) => setMeditationAnswers((a) => ({ ...a, apply: e.target.value }))}
+                  style={{ width: '100%', minHeight: 60, boxSizing: 'border-box', fontSize: 13, padding: 8 }} />
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: 4, marginTop: 10 }}>Prayer</label>
+                <textarea value={meditationAnswers.prayer}
+                  onChange={(e) => setMeditationAnswers((a) => ({ ...a, prayer: e.target.value }))}
+                  style={{ width: '100%', minHeight: 60, boxSizing: 'border-box', fontSize: 13, padding: 8 }} />
+              </div>
+              <button onClick={saveMeditation} disabled={meditationSaving} style={{ fontSize: 14, cursor: 'pointer', padding: '8px 20px' }}>
+                {meditationSaving ? 'Saving...' : 'Save & Finish'}
+              </button>
+            </>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 28 }}>
+            {meditationSteps.map((s, i) => (
+              <span key={s} style={{ width: 6, height: 6, borderRadius: '50%', background: i <= stepIndex ? '#333' : '#0002' }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const leftPane = {
     book, chapter, scope,
