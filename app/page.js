@@ -111,6 +111,8 @@ export default function HomePage() {
   const [activeTheme, setActiveTheme] = useState(null)
   const [themeDraft, setThemeDraft] = useState('')
   const [splitThemeDraft, setSplitThemeDraft] = useState('')
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false)
+  const [splitThemeMenuOpen, setSplitThemeMenuOpen] = useState(false)
 
   // Prayer list
   const [prayers, setPrayers] = useState([])
@@ -221,6 +223,30 @@ export default function HomePage() {
   useEffect(() => {
     if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, bibleLang)
   }, [splitOn, splitBook, splitChapter, bibleLang, fetchChapter])
+
+  // When viewing a theme folder, make sure each tagged verse's chapter
+  // text is loaded so we can show the actual verse, not just the reference.
+  useEffect(() => {
+    if (!activeTheme) return
+    const seen = new Set()
+    verseThemes.filter((t) => t.theme === activeTheme).forEach((t) => {
+      const k = `${t.book}-${t.chapter}`
+      if (seen.has(k)) return
+      seen.add(k)
+      fetchChapter(t.book, t.chapter, bibleLang)
+    })
+  }, [activeTheme, verseThemes, bibleLang, fetchChapter])
+
+  // Looks up a specific verse's text from chapterCache (already loaded,
+  // or being loaded, by the effect above).
+  function themeVerseText(book, chapter, verseNum) {
+    const entry = chapterCache[chapterCacheKey(book, chapter, bibleLang)]
+    if (!entry) return null
+    if (entry.loading) return null
+    if (entry.error) return null
+    const v = entry.verses.find((v) => v.n === verseNum)
+    return v ? v.t : null
+  }
 
   // Debounced remote Bible search (300ms after typing stops) using
   // api.bible's own search endpoint via /api/bible?q=...
@@ -446,7 +472,7 @@ export default function HomePage() {
       return (
         <div key={v.n} style={{ marginBottom: 10 }}>
           <span
-            onClick={() => p.setSelectedVerse(isSelected ? null : v.n)}
+            onClick={() => { p.setSelectedVerse(isSelected ? null : v.n); p.setThemeMenuOpen(false) }}
             style={{
               cursor: 'pointer',
               background: highlights[key] ? HIGHLIGHTS[highlights[key]] : 'transparent',
@@ -465,10 +491,13 @@ export default function HomePage() {
                     style={{ width: 18, height: 18, borderRadius: '50%', background: color, border: '1px solid #0002', cursor: 'pointer' }} />
                 ))}
                 <button onClick={() => setBookmarkHere(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
+                <button onClick={() => p.setThemeMenuOpen(!p.themeMenuOpen)} style={{ fontSize: 12, cursor: 'pointer' }}>
+                  🏷 Theme{themesForVerse(p.book, p.chapter, v.n).length > 0 ? ` (${themesForVerse(p.book, p.chapter, v.n).length})` : ''}
+                </button>
               </div>
 
+              {p.themeMenuOpen && (
               <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.7, marginBottom: 4 }}>Themes</div>
                 {themesForVerse(p.book, p.chapter, v.n).length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
                     {themesForVerse(p.book, p.chapter, v.n).map((t) => (
@@ -491,12 +520,13 @@ export default function HomePage() {
                 )}
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input value={p.themeDraft} onChange={(e) => p.setThemeDraft(e.target.value)}
-                    placeholder="New theme name..." style={{ flex: 1, fontSize: 12, padding: 4 }}
+                    placeholder="New theme name..." autoFocus style={{ flex: 1, fontSize: 12, padding: 4 }}
                     onKeyDown={(e) => { if (e.key === 'Enter' && p.themeDraft.trim()) { addVerseTheme(p.book, p.chapter, v.n, p.themeDraft.trim()); p.setThemeDraft('') } }} />
                   <button onClick={() => { if (p.themeDraft.trim()) { addVerseTheme(p.book, p.chapter, v.n, p.themeDraft.trim()); p.setThemeDraft('') } }}
                     style={{ fontSize: 12, cursor: 'pointer' }}>Add</button>
                 </div>
               </div>
+              )}
 
               {notesHere.map((n) => {
                 const isLinkedIn = !(n.book === p.book && n.chapter === p.chapter && n.verse === v.n)
@@ -611,6 +641,7 @@ export default function HomePage() {
     replyDraftFor, setReplyDraftFor,
     replyText, setReplyText,
     themeDraft, setThemeDraft,
+    themeMenuOpen, setThemeMenuOpen,
   }
 
   const rightPane = {
@@ -624,6 +655,7 @@ export default function HomePage() {
     replyDraftFor: splitReplyDraftFor, setReplyDraftFor: setSplitReplyDraftFor,
     replyText: splitReplyText, setReplyText: setSplitReplyText,
     themeDraft: splitThemeDraft, setThemeDraft: setSplitThemeDraft,
+    themeMenuOpen: splitThemeMenuOpen, setThemeMenuOpen: setSplitThemeMenuOpen,
   }
 
   return (
@@ -943,17 +975,23 @@ export default function HomePage() {
               {verseThemes.filter((t) => t.theme === activeTheme).length === 0 && (
                 <p style={{ fontSize: 13, opacity: 0.6 }}>No verses left in this folder.</p>
               )}
-              {verseThemes.filter((t) => t.theme === activeTheme).map((t) => (
-                <div key={t.id}
-                  onClick={() => jumpToVerse(t.book, t.chapter, t.verse)}
-                  style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>{t.book} {t.chapter}:{t.verse}</span>
-                  <button onClick={(e) => { e.stopPropagation(); removeVerseTheme(t.id) }}
-                    style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>
-                    Remove
-                  </button>
-                </div>
-              ))}
+              {verseThemes.filter((t) => t.theme === activeTheme).map((t) => {
+                const text = themeVerseText(t.book, t.chapter, t.verse)
+                return (
+                  <div key={t.id}
+                    onClick={() => jumpToVerse(t.book, t.chapter, t.verse)}
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                      <span style={{ fontSize: 11, opacity: 0.6 }}>{t.book} {t.chapter}:{t.verse}</span>
+                      <button onClick={(e) => { e.stopPropagation(); removeVerseTheme(t.id) }}
+                        style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>
+                        Remove
+                      </button>
+                    </div>
+                    <div style={{ marginTop: 2 }}>{text || <span style={{ opacity: 0.5, fontStyle: 'italic' }}>Loading verse text...</span>}</div>
+                  </div>
+                )
+              })}
             </>
           )}
         </div>
