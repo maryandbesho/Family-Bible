@@ -49,7 +49,7 @@ const chaptersFor = (book) => {
   const meta = BOOK_META.find((b) => b.name === book)
   return meta ? Array.from({ length: meta.chapters }, (_, i) => i + 1) : []
 }
-const chapterCacheKey = (book, chapter) => `${book}-${chapter}`
+const chapterCacheKey = (book, chapter, lang) => `${lang}-${book}-${chapter}`
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
@@ -64,6 +64,11 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true)
 
   const [tab, setTab] = useState('read') // 'read' | 'prayers'
+
+  // Reading language for the whole app. 'en' = NKJV (NT) + Brenton
+  // Septuagint (OT). 'ar' = Smith & Van Dyck Arabic (whole Bible).
+  // Applies to both the main pane and the split-view pane.
+  const [bibleLang, setBibleLang] = useState('en')
 
   const [book, setBook] = useState('Psalms')
   const [chapter, setChapter] = useState(23)
@@ -176,35 +181,35 @@ export default function HomePage() {
 
   // Fetches a chapter's verse text from /api/bible and stores it in
   // chapterCache. Skips the fetch if we already have (or are already
-  // fetching) that chapter.
-  const fetchChapter = useCallback((book, chapter) => {
-    const key = chapterCacheKey(book, chapter)
+  // fetching) that chapter in that language.
+  const fetchChapter = useCallback((book, chapter, lang) => {
+    const key = chapterCacheKey(book, chapter, lang)
     setChapterCache((cache) => {
       if (cache[key]) return cache // already loaded or loading
-      return { ...cache, [key]: { verses: [], loading: true, error: null, copyright: null } }
+      return { ...cache, [key]: { verses: [], loading: true, error: null, copyright: null, dir: 'ltr' } }
     })
     const usfm = usfmFor(book)
-    fetch(`/api/bible?book=${usfm}&chapter=${chapter}`)
+    fetch(`/api/bible?book=${usfm}&chapter=${chapter}&lang=${lang}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.error) {
-          setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: data.error, copyright: null } }))
+          setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: data.error, copyright: null, dir: 'ltr' } }))
         } else {
-          setChapterCache((cache) => ({ ...cache, [key]: { verses: data.verses || [], loading: false, error: null, copyright: data.copyright || null } }))
+          setChapterCache((cache) => ({ ...cache, [key]: { verses: data.verses || [], loading: false, error: null, copyright: data.copyright || null, dir: data.dir || 'ltr' } }))
         }
       })
       .catch((err) => {
-        setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: String(err), copyright: null } }))
+        setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: String(err), copyright: null, dir: 'ltr' } }))
       })
   }, [])
 
   useEffect(() => {
-    if (book && chapter) fetchChapter(book, chapter)
-  }, [book, chapter, fetchChapter])
+    if (book && chapter) fetchChapter(book, chapter, bibleLang)
+  }, [book, chapter, bibleLang, fetchChapter])
 
   useEffect(() => {
-    if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter)
-  }, [splitOn, splitBook, splitChapter, fetchChapter])
+    if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, bibleLang)
+  }, [splitOn, splitBook, splitChapter, bibleLang, fetchChapter])
 
   // Debounced remote Bible search (300ms after typing stops) using
   // api.bible's own search endpoint via /api/bible?q=...
@@ -390,7 +395,7 @@ export default function HomePage() {
   // replies, bookmark) for a given pane's book/chapter/state. Used for both
   // the main pane and the split-view right pane so they share all features.
   function renderReadingPane(p) {
-    const entry = chapterCache[chapterCacheKey(p.book, p.chapter)]
+    const entry = chapterCache[chapterCacheKey(p.book, p.chapter, bibleLang)]
     if (!entry || entry.loading) {
       return <p style={{ fontSize: 13, opacity: 0.6 }}>Loading {p.book} {p.chapter}...</p>
     }
@@ -399,7 +404,7 @@ export default function HomePage() {
     }
     const verses = entry.verses
     return (
-      <>
+      <div dir={entry.dir === 'rtl' ? 'rtl' : 'ltr'} style={{ textAlign: entry.dir === 'rtl' ? 'right' : 'left' }}>
       {verses.map((v) => {
       const key = vKey(p.book, p.chapter, v.n)
       const isSelected = p.selectedVerse === v.n
@@ -511,9 +516,9 @@ export default function HomePage() {
       )
       })}
       {entry.copyright && (
-        <p style={{ fontSize: 10, opacity: 0.5, marginTop: 12 }}>{entry.copyright}</p>
+        <p style={{ fontSize: 10, opacity: 0.5, marginTop: 12, textAlign: 'left', direction: 'ltr' }}>{entry.copyright}</p>
       )}
-      </>
+      </div>
     )
   }
 
@@ -601,6 +606,18 @@ export default function HomePage() {
           <option value="personal">Personal</option>
           <option value="family">Family</option>
         </select>
+        <div style={{ display: 'flex', border: '1px solid #ccc', borderRadius: 4, overflow: 'hidden' }}>
+          <button onClick={() => setBibleLang('en')}
+            style={{ padding: '4px 10px', fontSize: 12, cursor: 'pointer', border: 'none',
+              background: bibleLang === 'en' ? '#333' : '#fff', color: bibleLang === 'en' ? '#fff' : '#333' }}>
+            English
+          </button>
+          <button onClick={() => setBibleLang('ar')}
+            style={{ padding: '4px 10px', fontSize: 12, cursor: 'pointer', border: 'none',
+              background: bibleLang === 'ar' ? '#333' : '#fff', color: bibleLang === 'ar' ? '#fff' : '#333' }}>
+            العربية
+          </button>
+        </div>
         <button onClick={() => setSplitOn((s) => !s)}
           style={{ marginLeft: 'auto', fontSize: 12, cursor: 'pointer' }}>
           {splitOn ? '✕ Exit split view' : '⬛ Split view'}
@@ -780,8 +797,9 @@ export default function HomePage() {
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search Bible text and your notes..."
             autoFocus
-            style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 14, marginBottom: 20 }}
+            style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 14, marginBottom: 4 }}
           />
+          <p style={{ fontSize: 11, opacity: 0.6, margin: '0 0 16px' }}>Bible-text search currently covers the English translations only.</p>
 
           {searchQuery.trim() && (() => {
             const noteResults = searchNotes(searchQuery)
