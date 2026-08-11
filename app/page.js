@@ -104,6 +104,14 @@ export default function HomePage() {
   const [replies, setReplies] = useState({}) // note_id -> [reply, ...]
   const [bookmark, setBookmark] = useState(null)
 
+  // Verse themes ("folders") - each row tags one verse with one theme
+  // name, personal to the signed-in user. allThemeNames is the distinct
+  // list of folder names, derived from verseThemes below.
+  const [verseThemes, setVerseThemes] = useState([])
+  const [activeTheme, setActiveTheme] = useState(null)
+  const [themeDraft, setThemeDraft] = useState('')
+  const [splitThemeDraft, setSplitThemeDraft] = useState('')
+
   // Prayer list
   const [prayers, setPrayers] = useState([])
   const [showAnswered, setShowAnswered] = useState(false)
@@ -164,6 +172,9 @@ export default function HomePage() {
     const csMap = {}
     ;(cs || []).forEach((s) => { csMap[summaryKey(s.book, s.chapter)] = s })
     setChapterSummaries(csMap)
+
+    const { data: vt } = await supabase.from('verse_themes').select('*').eq('user_id', uid).order('theme', { ascending: true })
+    setVerseThemes(vt || [])
   }, [supabase])
 
   useEffect(() => {
@@ -309,6 +320,29 @@ export default function HomePage() {
     if (data) setBookmark(data)
   }
 
+  // Tags a verse with a theme name, creating the "folder" the first time
+  // it's used. Safe to call again for the same verse+theme (no duplicate).
+  async function addVerseTheme(b, c, v, themeName) {
+    const theme = themeName.trim()
+    if (!theme || !v || !user) return
+    if (verseThemes.some((t) => t.book === b && t.chapter === c && t.verse === v && t.theme.toLowerCase() === theme.toLowerCase())) return
+    const { data, error } = await supabase.from('verse_themes').insert({
+      user_id: user.id, book: b, chapter: c, verse: v, theme,
+    }).select().single()
+    if (!error && data) setVerseThemes((t) => [...t, data])
+  }
+
+  async function removeVerseTheme(themeId) {
+    const { error } = await supabase.from('verse_themes').delete().eq('id', themeId)
+    if (!error) setVerseThemes((t) => t.filter((x) => x.id !== themeId))
+  }
+
+  function themesForVerse(b, c, v) {
+    return verseThemes.filter((t) => t.book === b && t.chapter === c && t.verse === v)
+  }
+
+  const allThemeNames = [...new Set(verseThemes.map((t) => t.theme))].sort((a, b) => a.localeCompare(b))
+
   async function addPrayer() {
     if (!prayerTitle.trim() || !user) return
     setSavingPrayer(true)
@@ -433,6 +467,37 @@ export default function HomePage() {
                 <button onClick={() => setBookmarkHere(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
               </div>
 
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.7, marginBottom: 4 }}>Themes</div>
+                {themesForVerse(p.book, p.chapter, v.n).length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                    {themesForVerse(p.book, p.chapter, v.n).map((t) => (
+                      <span key={t.id} style={{ fontSize: 11, background: '#ded9c9', borderRadius: 12, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        📁 {t.theme}
+                        <button onClick={() => removeVerseTheme(t.id)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1, opacity: 0.6 }}>✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {allThemeNames.filter((name) => !themesForVerse(p.book, p.chapter, v.n).some((t) => t.theme === name)).length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                    {allThemeNames.filter((name) => !themesForVerse(p.book, p.chapter, v.n).some((t) => t.theme === name)).map((name) => (
+                      <button key={name} onClick={() => addVerseTheme(p.book, p.chapter, v.n, name)}
+                        style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: '1px solid #0002', borderRadius: 12, padding: '2px 8px' }}>
+                        + {name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input value={p.themeDraft} onChange={(e) => p.setThemeDraft(e.target.value)}
+                    placeholder="New theme name..." style={{ flex: 1, fontSize: 12, padding: 4 }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && p.themeDraft.trim()) { addVerseTheme(p.book, p.chapter, v.n, p.themeDraft.trim()); p.setThemeDraft('') } }} />
+                  <button onClick={() => { if (p.themeDraft.trim()) { addVerseTheme(p.book, p.chapter, v.n, p.themeDraft.trim()); p.setThemeDraft('') } }}
+                    style={{ fontSize: 12, cursor: 'pointer' }}>Add</button>
+                </div>
+              </div>
+
               {notesHere.map((n) => {
                 const isLinkedIn = !(n.book === p.book && n.chapter === p.chapter && n.verse === v.n)
                 const otherRef = isLinkedIn
@@ -545,6 +610,7 @@ export default function HomePage() {
     saving, setSaving,
     replyDraftFor, setReplyDraftFor,
     replyText, setReplyText,
+    themeDraft, setThemeDraft,
   }
 
   const rightPane = {
@@ -557,12 +623,13 @@ export default function HomePage() {
     saving: splitSaving, setSaving: setSplitSaving,
     replyDraftFor: splitReplyDraftFor, setReplyDraftFor: setSplitReplyDraftFor,
     replyText: splitReplyText, setReplyText: setSplitReplyText,
+    themeDraft: splitThemeDraft, setThemeDraft: setSplitThemeDraft,
   }
 
   return (
     <div style={{ maxWidth: splitOn ? 1000 : 640, margin: '0 auto', padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : 'Search'}</h1>
+        <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : 'Search'}</h1>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer' }}>Sign out</button>
       </div>
 
@@ -584,6 +651,12 @@ export default function HomePage() {
             borderBottom: tab === 'search' ? '2px solid #333' : '2px solid transparent',
             fontWeight: tab === 'search' ? 600 : 400, fontSize: 14 }}>
           Search
+        </button>
+        <button onClick={() => setTab('themes')}
+          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
+            borderBottom: tab === 'themes' ? '2px solid #333' : '2px solid transparent',
+            fontWeight: tab === 'themes' ? 600 : 400, fontSize: 14 }}>
+          Themes
         </button>
       </div>
 
@@ -834,6 +907,54 @@ export default function HomePage() {
 
           {!searchQuery.trim() && (
             <p style={{ fontSize: 13, opacity: 0.6 }}>Start typing to search Bible verses and your saved notes.</p>
+          )}
+        </div>
+      )}
+
+      {tab === 'themes' && (
+        <div>
+          {!activeTheme ? (
+            <>
+              <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Your theme folders</h3>
+              {allThemeNames.length === 0 && (
+                <p style={{ fontSize: 13, opacity: 0.6 }}>
+                  No themes yet. Select a verse in Read, then use "Add theme" to create your first folder.
+                </p>
+              )}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                {allThemeNames.map((name) => (
+                  <button key={name} onClick={() => setActiveTheme(name)}
+                    style={{ cursor: 'pointer', padding: '10px 14px', borderRadius: 8, background: '#f4f1ea', border: 'none', fontSize: 13, textAlign: 'left' }}>
+                    📁 {name}{' '}
+                    <span style={{ opacity: 0.6, fontSize: 11 }}>
+                      ({verseThemes.filter((t) => t.theme === name).length})
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <button onClick={() => setActiveTheme(null)}
+                style={{ fontSize: 12, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline', marginBottom: 12, padding: 0 }}>
+                ← All themes
+              </button>
+              <h3 style={{ fontSize: 15, margin: '0 0 12px' }}>📁 {activeTheme}</h3>
+              {verseThemes.filter((t) => t.theme === activeTheme).length === 0 && (
+                <p style={{ fontSize: 13, opacity: 0.6 }}>No verses left in this folder.</p>
+              )}
+              {verseThemes.filter((t) => t.theme === activeTheme).map((t) => (
+                <div key={t.id}
+                  onClick={() => jumpToVerse(t.book, t.chapter, t.verse)}
+                  style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{t.book} {t.chapter}:{t.verse}</span>
+                  <button onClick={(e) => { e.stopPropagation(); removeVerseTheme(t.id) }}
+                    style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </>
           )}
         </div>
       )}
