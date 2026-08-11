@@ -37,7 +37,7 @@ const USFM_TO_NAME = {
 // directly to the following word, e.g. "1In the beginning...2And the
 // earth...") into an array of {n, t} verse objects.
 function parseVerses(content) {
-  const cleaned = content.replace(/\s+/g, ' ').trim()
+  const cleaned = content.replace(/\[|\]/g, '').replace(/\s+/g, ' ').trim()
   const verses = []
   const re = /(\d{1,3})([^\d]+)/g
   let match
