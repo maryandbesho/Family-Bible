@@ -55,6 +55,35 @@ const vKey = (b, c, v) => `${b}-${c}-${v}`
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
 const summaryKey = (b, c) => `${b}-${c}`
 
+// Curated color themes for the Settings tab. Each theme provides a full
+// set of tokens used throughout the app (page background, card surfaces,
+// text, borders, and an accent color for buttons/tabs/selection).
+const THEMES = {
+  parchment: { label: 'Parchment', bg: '#F6F1E4', surface: '#FFFFFF', surfaceAlt: '#FBF6EA', chip: '#EDE2C8', text: '#2B2116', textMuted: '#6B5D4B', border: '#E3D9C2', hairline: 'rgba(43,33,22,0.14)', accent: '#7A2E2E', onAccent: '#FFFFFF', danger: '#B00000' },
+  midnight: { label: 'Midnight', bg: '#1B1D24', surface: '#242732', surfaceAlt: '#2B2E3A', chip: '#333748', text: '#EDEAE2', textMuted: '#A8A296', border: '#3A3D4A', hairline: 'rgba(255,255,255,0.14)', accent: '#C9A24B', onAccent: '#1B1D24', danger: '#FF6B6B' },
+  sage: { label: 'Sage Garden', bg: '#F1F3EA', surface: '#FFFFFF', surfaceAlt: '#E9EDE0', chip: '#DCE3CB', text: '#2C3326', textMuted: '#5E6B52', border: '#D7DCC6', hairline: 'rgba(44,51,38,0.12)', accent: '#4B6B4A', onAccent: '#FFFFFF', danger: '#B0342C' },
+  slate: { label: 'Slate Study', bg: '#EEF1F4', surface: '#FFFFFF', surfaceAlt: '#E4E9EE', chip: '#D6DEE6', text: '#212B36', textMuted: '#5E6B78', border: '#D3DBE2', hairline: 'rgba(33,43,54,0.12)', accent: '#2F5C8A', onAccent: '#FFFFFF', danger: '#B0342C' },
+  rose: { label: 'Dusty Rose', bg: '#F8F1EF', surface: '#FFFFFF', surfaceAlt: '#F1E5E2', chip: '#EAD5D0', text: '#3A2A28', textMuted: '#7A6360', border: '#E7D4CF', hairline: 'rgba(58,42,40,0.12)', accent: '#A65D57', onAccent: '#FFFFFF', danger: '#B0342C' },
+}
+const THEME_ORDER = ['parchment', 'midnight', 'sage', 'slate', 'rose']
+const FONT_SCALES = { small: 0.9, medium: 1, large: 1.15, xlarge: 1.3 }
+const FONT_SCALE_ORDER = ['small', 'medium', 'large', 'xlarge']
+const FONT_SCALE_LABELS = { small: 'Small', medium: 'Medium', large: 'Large', xlarge: 'Extra Large' }
+// Fonts used throughout the app: Lora for scripture/headings, Inter for UI chrome.
+const FONT_IMPORT_CSS = `@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600;700&display=swap');`
+// Picks readable text (near-black or near-white) for a given hex background,
+// so custom accent colors chosen in Settings always stay legible.
+function contrastText(hex) {
+  if (!hex) return '#FFFFFF'
+  const h = hex.replace('#', '')
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
+  const r = parseInt(full.substring(0, 2), 16)
+  const g = parseInt(full.substring(2, 4), 16)
+  const b = parseInt(full.substring(4, 6), 16)
+  const yiq = (r * 299 + g * 587 + b * 114) / 1000
+  return yiq >= 150 ? '#1B1D24' : '#FFFFFF'
+}
+
 export default function HomePage() {
   const router = useRouter()
   const supabase = createClient()
@@ -152,6 +181,48 @@ export default function HomePage() {
   // Reply drafts
   const [replyDraftFor, setReplyDraftFor] = useState(null)
   const [replyText, setReplyText] = useState('')
+
+  // Appearance settings (Settings tab). Saved to this browser's
+  // localStorage so they persist across visits on this device.
+  const [themeKey, setThemeKey] = useState('parchment')
+  const [fontScaleKey, setFontScaleKey] = useState('medium')
+  const [accentOverride, setAccentOverride] = useState(null)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
+
+  useEffect(() => {
+    try {
+      const savedTheme = window.localStorage.getItem('fb_theme')
+      const savedFont = window.localStorage.getItem('fb_font_scale')
+      const savedAccent = window.localStorage.getItem('fb_accent')
+      if (savedTheme && THEMES[savedTheme]) setThemeKey(savedTheme)
+      if (savedFont && FONT_SCALES[savedFont]) setFontScaleKey(savedFont)
+      if (savedAccent) setAccentOverride(savedAccent)
+    } catch (e) { /* localStorage unavailable */ }
+    setSettingsLoaded(true)
+  }, [])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    try { window.localStorage.setItem('fb_theme', themeKey) } catch (e) {}
+  }, [themeKey, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    try { window.localStorage.setItem('fb_font_scale', fontScaleKey) } catch (e) {}
+  }, [fontScaleKey, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    try {
+      if (accentOverride) window.localStorage.setItem('fb_accent', accentOverride)
+      else window.localStorage.removeItem('fb_accent')
+    } catch (e) {}
+  }, [accentOverride, settingsLoaded])
+
+  const themePalette = THEMES[themeKey] || THEMES.parchment
+  const resolvedAccent = accentOverride || themePalette.accent
+  const resolvedOnAccent = accentOverride ? contrastText(accentOverride) : themePalette.onAccent
+  const fontScale = FONT_SCALES[fontScaleKey] || 1
 
   const loadData = useCallback(async (uid) => {
     const { data: hl } = await supabase.from('highlights').select('*').eq('user_id', uid)
@@ -556,35 +627,36 @@ export default function HomePage() {
       return <p style={{ fontSize: 13, opacity: 0.6 }}>Loading {p.book} {p.chapter}...</p>
     }
     if (entry.error) {
-      return <p style={{ fontSize: 13, color: '#a33' }}>Couldn't load {p.book} {p.chapter}: {entry.error}</p>
+      return <p style={{ fontSize: 13, color: themePalette.danger }}>Couldn't load {p.book} {p.chapter}: {entry.error}</p>
     }
     const verses = entry.verses
     return (
-      <div dir={entry.dir === 'rtl' ? 'rtl' : 'ltr'} style={{ textAlign: entry.dir === 'rtl' ? 'right' : 'left' }}>
+      <div dir={entry.dir === 'rtl' ? 'rtl' : 'ltr'} style={{ textAlign: entry.dir === 'rtl' ? 'right' : 'left', fontFamily: entry.dir === 'rtl' ? 'inherit' : "'Lora', Georgia, serif", fontSize: 17, lineHeight: 1.75 }}>
       {verses.map((v) => {
       const key = vKey(p.book, p.chapter, v.n)
       const isSelected = p.selectedVerse === v.n
       const notesHere = notesForVerse(p.book, p.chapter, v.n)
       return (
-        <div key={v.n} style={{ marginBottom: 10 }}>
+        <div key={v.n} style={{ marginBottom: 12 }}>
           <span
             onClick={() => { p.setSelectedVerse(isSelected ? null : v.n); p.setThemeMenuOpen(false) }}
             style={{
               cursor: 'pointer',
               background: highlights[key] ? HIGHLIGHTS[highlights[key]] : 'transparent',
-              outline: isSelected ? '2px solid #999' : 'none',
+              outline: isSelected ? `2px solid ${resolvedAccent}` : 'none',
+              borderRadius: 3,
             }}
           >
-            <sup style={{ opacity: 0.5, marginRight: 4 }}>{v.n}</sup>{v.t}
+            <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{v.n}</sup>{v.t}
           </span>
-          {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6 }}>Notes: {notesHere.length}</span>}
+          {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
 
           {isSelected && (
-            <div style={{ marginTop: 8, background: '#f4f1ea', borderRadius: 8, padding: 12 }}>
+            <div style={{ marginTop: 8, background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13 }}>
               <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
                 {Object.entries(HIGHLIGHTS).map(([name, color]) => (
                   <button key={name} onClick={() => toggleHighlight(name, p.book, p.chapter, v.n)}
-                    style={{ width: 18, height: 18, borderRadius: '50%', background: color, border: '1px solid #0002', cursor: 'pointer' }} />
+                    style={{ width: 18, height: 18, borderRadius: '50%', background: color, border: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }} />
                 ))}
                 <button onClick={() => setBookmarkHere(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
                 <button onClick={() => p.setThemeMenuOpen(!p.themeMenuOpen)} style={{ fontSize: 12, cursor: 'pointer' }}>
@@ -600,7 +672,7 @@ export default function HomePage() {
                 {themesForVerse(p.book, p.chapter, v.n).length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
                     {themesForVerse(p.book, p.chapter, v.n).map((t) => (
-                      <span key={t.id} style={{ fontSize: 11, background: '#ded9c9', borderRadius: 12, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <span key={t.id} style={{ fontSize: 11, background: themePalette.chip, borderRadius: 12, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                         📁 {t.theme}
                         <button onClick={() => removeVerseTheme(t.id)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1, opacity: 0.6 }}>✕</button>
                       </span>
@@ -611,7 +683,7 @@ export default function HomePage() {
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
                     {allThemeNames.filter((name) => !themesForVerse(p.book, p.chapter, v.n).some((t) => t.theme === name)).map((name) => (
                       <button key={name} onClick={() => addVerseTheme(p.book, p.chapter, v.n, name)}
-                        style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: '1px solid #0002', borderRadius: 12, padding: '2px 8px' }}>
+                        style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: `1px solid ${themePalette.hairline}`, borderRadius: 12, padding: '2px 8px' }}>
                         + {name}
                       </button>
                     ))}
@@ -633,11 +705,11 @@ export default function HomePage() {
                   ? { book: n.book, chapter: n.chapter, verse: n.verse }
                   : (n.link_book ? { book: n.link_book, chapter: n.link_chapter, verse: n.link_verse } : null)
                 return (
-                  <div key={n.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001' }}>
+                  <div key={n.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}` }}>
                     <div style={{ opacity: 0.6, fontSize: 11, display: 'flex', justifyContent: 'space-between' }}>
                       <span>{new Date(n.created_at).toLocaleString()} · {n.scope}</span>
                       {n.user_id === user.id && (
-                        <button onClick={() => deleteNote(n.id)} style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>Delete</button>
+                        <button onClick={() => deleteNote(n.id)} style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>Delete</button>
                       )}
                     </div>
                     <div>{n.text}</div>
@@ -652,7 +724,7 @@ export default function HomePage() {
                     )}
 
                     {(replies[n.id] || []).map((r) => (
-                      <div key={r.id} style={{ marginTop: 6, marginLeft: 12, borderLeft: '2px solid #0002', paddingLeft: 8, fontSize: 12 }}>
+                      <div key={r.id} style={{ marginTop: 6, marginLeft: 12, borderLeft: `2px solid ${themePalette.hairline}`, paddingLeft: 8, fontSize: 12 }}>
                         <div style={{ opacity: 0.55, fontSize: 10 }}>{new Date(r.created_at).toLocaleString()} · {r.scope}</div>
                         {r.text}
                       </div>
@@ -735,10 +807,12 @@ export default function HomePage() {
     const ss = String(meditationPauseLeft % 60).padStart(2, '0')
     return (
       <div style={{
-        position: 'fixed', inset: 0, background: '#f4f1ea', zIndex: 1000,
+        position: 'fixed', inset: 0, background: themePalette.bg, color: themePalette.text, zIndex: 1000,
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
         padding: 24, boxSizing: 'border-box', textAlign: 'center',
+        fontFamily: "'Inter', system-ui, sans-serif", zoom: fontScale,
       }}>
+        <style>{FONT_IMPORT_CSS}</style>
         <button onClick={exitMeditation}
           style={{ position: 'absolute', top: 16, right: 20, fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', opacity: 0.6 }}>
           ✕ Exit
@@ -748,7 +822,7 @@ export default function HomePage() {
           <p style={{ fontSize: 12, letterSpacing: 1, opacity: 0.5, marginBottom: 4 }}>
             {meditationTarget.book} {meditationTarget.chapter}:{meditationTarget.verse}
           </p>
-          <p style={{ fontSize: 22, lineHeight: 1.6, marginBottom: 28 }}>{meditationTarget.text}</p>
+          <p style={{ fontSize: 22, lineHeight: 1.6, marginBottom: 28, fontFamily: "'Lora', Georgia, serif" }}>{meditationTarget.text}</p>
 
           {meditationStep === 'read' && (
             <>
@@ -829,7 +903,7 @@ export default function HomePage() {
 
           <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 28 }}>
             {meditationSteps.map((s, i) => (
-              <span key={s} style={{ width: 6, height: 6, borderRadius: '50%', background: i <= stepIndex ? '#333' : '#0002' }} />
+              <span key={s} style={{ width: 6, height: 6, borderRadius: '50%', background: i <= stepIndex ? resolvedAccent : themePalette.hairline }} />
             ))}
           </div>
         </div>
@@ -866,37 +940,37 @@ export default function HomePage() {
   }
 
   return (
-    <div style={{ maxWidth: splitOn ? 1000 : 640, margin: '0 auto', padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>{tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : 'Search'}</h1>
-        <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer' }}>Sign out</button>
+    <div style={{ minHeight: '100vh', background: themePalette.bg, color: themePalette.text, fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <style>{FONT_IMPORT_CSS}</style>
+      <div style={{ maxWidth: splitOn ? 1000 : 640, margin: '0 auto', padding: '32px 24px 64px', zoom: fontScale }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24, paddingBottom: 16, borderBottom: `1px solid ${themePalette.border}` }}>
+        <div>
+          <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: themePalette.textMuted, marginBottom: 4 }}>Family Bible</div>
+          <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
+            {tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'settings' ? 'Settings' : 'Search'}
+          </h1>
+        </div>
+        <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid #0002' }}>
-        <button onClick={() => setTab('read')}
-          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
-            borderBottom: tab === 'read' ? '2px solid #333' : '2px solid transparent',
-            fontWeight: tab === 'read' ? 600 : 400, fontSize: 14 }}>
-          Read
-        </button>
-        <button onClick={() => setTab('prayers')}
-          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
-            borderBottom: tab === 'prayers' ? '2px solid #333' : '2px solid transparent',
-            fontWeight: tab === 'prayers' ? 600 : 400, fontSize: 14 }}>
-          Prayers{prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}
-        </button>
-        <button onClick={() => setTab('search')}
-          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
-            borderBottom: tab === 'search' ? '2px solid #333' : '2px solid transparent',
-            fontWeight: tab === 'search' ? 600 : 400, fontSize: 14 }}>
-          Search
-        </button>
-        <button onClick={() => setTab('themes')}
-          style={{ cursor: 'pointer', padding: '8px 4px', background: 'none', border: 'none',
-            borderBottom: tab === 'themes' ? '2px solid #333' : '2px solid transparent',
-            fontWeight: tab === 'themes' ? 600 : 400, fontSize: 14 }}>
-          Themes
-        </button>
+      <div style={{ display: 'flex', gap: 2, marginBottom: 28, borderBottom: `1px solid ${themePalette.border}`, overflowX: 'auto' }}>
+        {[
+          { key: 'read', label: 'Read' },
+          { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}` },
+          { key: 'search', label: 'Search' },
+          { key: 'themes', label: 'Themes' },
+          { key: 'settings', label: 'Settings' },
+        ].map((navTab) => (
+          <button key={navTab.key} onClick={() => setTab(navTab.key)}
+            style={{
+              cursor: 'pointer', padding: '10px 14px', background: 'none', border: 'none',
+              borderBottom: tab === navTab.key ? `2px solid ${resolvedAccent}` : '2px solid transparent',
+              fontWeight: tab === navTab.key ? 600 : 400, fontSize: 14, whiteSpace: 'nowrap',
+              color: tab === navTab.key ? themePalette.text : themePalette.textMuted,
+            }}>
+            {navTab.label}
+          </button>
+        ))}
       </div>
 
       {tab === 'read' && (<>
@@ -918,15 +992,15 @@ export default function HomePage() {
           <option value="personal">Personal</option>
           <option value="family">Family</option>
         </select>
-        <div style={{ display: 'flex', border: '1px solid #ccc', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', border: `1px solid ${themePalette.border}`, borderRadius: 6, overflow: 'hidden' }}>
           <button onClick={() => setBibleLang('en')}
-            style={{ padding: '4px 10px', fontSize: 12, cursor: 'pointer', border: 'none',
-              background: bibleLang === 'en' ? '#333' : '#fff', color: bibleLang === 'en' ? '#fff' : '#333' }}>
+            style={{ padding: '5px 12px', fontSize: 12, cursor: 'pointer', border: 'none',
+              background: bibleLang === 'en' ? resolvedAccent : themePalette.surface, color: bibleLang === 'en' ? resolvedOnAccent : themePalette.textMuted }}>
             English
           </button>
           <button onClick={() => setBibleLang('ar')}
-            style={{ padding: '4px 10px', fontSize: 12, cursor: 'pointer', border: 'none',
-              background: bibleLang === 'ar' ? '#333' : '#fff', color: bibleLang === 'ar' ? '#fff' : '#333' }}>
+            style={{ padding: '5px 12px', fontSize: 12, cursor: 'pointer', border: 'none',
+              background: bibleLang === 'ar' ? resolvedAccent : themePalette.surface, color: bibleLang === 'ar' ? resolvedOnAccent : themePalette.textMuted }}>
             العربية
           </button>
         </div>
@@ -939,7 +1013,7 @@ export default function HomePage() {
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
       <div style={{ flex: '1 1 300px', minWidth: 280 }}>
 
-      <div style={{ background: '#eef0e8', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
+      <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span onClick={() => setShowSummary((s) => !s)} style={{ cursor: 'pointer', fontWeight: 600 }}>
             Chapter summary {showSummary ? '▾' : '▸'}
@@ -986,7 +1060,7 @@ export default function HomePage() {
       </div>
 
       {splitOn && (
-        <div style={{ flex: '1 1 300px', minWidth: 280, borderLeft: '1px solid #0002', paddingLeft: 20 }}>
+        <div style={{ flex: '1 1 300px', minWidth: 280, borderLeft: `1px solid ${themePalette.hairline}`, paddingLeft: 20 }}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
             <select value={splitBook} onChange={(e) => { setSplitBook(e.target.value); setSplitChapter(chaptersFor(e.target.value)[0]); setSplitSelectedVerse(null) }}>
               {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
@@ -1008,7 +1082,7 @@ export default function HomePage() {
 
       {tab === 'prayers' && (
         <div>
-          <div style={{ background: '#f4f1ea', borderRadius: 8, padding: 12, marginBottom: 20 }}>
+          <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, marginBottom: 20 }}>
             <h3 style={{ fontSize: 14, margin: '0 0 8px' }}>Add a prayer</h3>
             <input value={prayerTitle} onChange={(e) => setPrayerTitle(e.target.value)} placeholder="What are you praying for?"
               style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6, padding: 6 }} />
@@ -1049,7 +1123,7 @@ export default function HomePage() {
             <p style={{ fontSize: 13, opacity: 0.6 }}>No active prayers yet.</p>
           )}
           {prayers.filter((p) => !p.is_answered).map((p) => (
-            <div key={p.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001' }}>
+            <div key={p.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                 <strong>{p.title}</strong>
                 <span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}{p.is_shared ? ' · Family' : ''}</span>
@@ -1067,7 +1141,7 @@ export default function HomePage() {
                     <button onClick={() => markPrayerAnswered(p.id)} style={{ fontSize: 11, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer' }}>
                       Mark answered
                     </button>
-                    <button onClick={() => deletePrayer(p.id)} style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>
+                    <button onClick={() => deletePrayer(p.id)} style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>
                       Delete
                     </button>
                   </>
@@ -1081,7 +1155,7 @@ export default function HomePage() {
               {showAnswered ? 'Hide' : 'Show'} answered prayers ({prayers.filter((p) => p.is_answered).length})
             </button>
             {showAnswered && prayers.filter((p) => p.is_answered).map((p) => (
-              <div key={p.id} style={{ fontSize: 13, marginTop: 10, paddingBottom: 10, borderBottom: '1px solid #0001', opacity: 0.75 }}>
+              <div key={p.id} style={{ fontSize: 13, marginTop: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, opacity: 0.75 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <strong>{p.title}</strong>
                   <span style={{ fontSize: 11, opacity: 0.6 }}>{p.category}</span>
@@ -1092,7 +1166,7 @@ export default function HomePage() {
                   Answered {p.answered_at ? new Date(p.answered_at).toLocaleDateString() : ''}
                 </div>
                 {p.user_id === user.id && (
-                  <button onClick={() => deletePrayer(p.id)} style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer', marginTop: 6 }}>
+                  <button onClick={() => deletePrayer(p.id)} style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer', marginTop: 6 }}>
                     Delete
                   </button>
                 )}
@@ -1122,7 +1196,7 @@ export default function HomePage() {
                 {bibleSearchResults.map((r) => (
                   <div key={`${r.book}-${r.chapter}-${r.verse}`}
                     onClick={() => jumpToVerse(r.book, r.chapter, r.verse)}
-                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
                     <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>{r.book} {r.chapter}:{r.verse}</div>
                     <div>{r.text}</div>
                   </div>
@@ -1133,7 +1207,7 @@ export default function HomePage() {
                 {noteResults.map((n) => (
                   <div key={n.id}
                     onClick={() => jumpToVerse(n.book, n.chapter, n.verse)}
-                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
                     <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>
                       {n.book} {n.chapter}:{n.verse} · {new Date(n.created_at).toLocaleDateString()} · {n.scope}
                     </div>
@@ -1163,7 +1237,7 @@ export default function HomePage() {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
                 {allThemeNames.map((name) => (
                   <button key={name} onClick={() => setActiveTheme(name)}
-                    style={{ cursor: 'pointer', padding: '10px 14px', borderRadius: 8, background: '#f4f1ea', border: 'none', fontSize: 13, textAlign: 'left' }}>
+                    style={{ cursor: 'pointer', padding: '10px 14px', borderRadius: 8, background: themePalette.surfaceAlt, border: 'none', fontSize: 13, textAlign: 'left' }}>
                     📁 {name}{' '}
                     <span style={{ opacity: 0.6, fontSize: 11 }}>
                       ({verseThemes.filter((t) => t.theme === name).length})
@@ -1187,11 +1261,11 @@ export default function HomePage() {
                 return (
                   <div key={t.id}
                     onClick={() => jumpToVerse(t.book, t.chapter, t.verse)}
-                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0001', cursor: 'pointer' }}>
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                       <span style={{ fontSize: 11, opacity: 0.6 }}>{t.book} {t.chapter}:{t.verse}</span>
                       <button onClick={(e) => { e.stopPropagation(); removeVerseTheme(t.id) }}
-                        style={{ fontSize: 11, color: '#b00', background: 'none', border: 'none', cursor: 'pointer' }}>
+                        style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>
                         Remove
                       </button>
                     </div>
@@ -1203,6 +1277,84 @@ export default function HomePage() {
           )}
         </div>
       )}
+
+      {tab === 'settings' && (
+        <div style={{ maxWidth: 480 }}>
+          <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Appearance</h3>
+          <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 20px' }}>
+            These settings are saved on this device.
+          </p>
+
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+              Color theme
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {THEME_ORDER.map((key) => {
+                const t = THEMES[key]
+                const selected = themeKey === key
+                return (
+                  <button key={key} onClick={() => setThemeKey(key)}
+                    style={{
+                      cursor: 'pointer', width: 96, padding: '12px 8px 10px', borderRadius: 12,
+                      border: selected ? `2px solid ${t.accent}` : `1px solid ${themePalette.border}`,
+                      background: themePalette.surface,
+                    }}>
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 5, marginBottom: 8 }}>
+                      <span style={{ width: 18, height: 18, borderRadius: '50%', background: t.bg, border: `1px solid ${t.border}`, display: 'inline-block' }} />
+                      <span style={{ width: 18, height: 18, borderRadius: '50%', background: t.accent, display: 'inline-block' }} />
+                    </div>
+                    <div style={{ fontSize: 12, color: themePalette.text, fontWeight: selected ? 600 : 400 }}>{t.label}</div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+              Accent color
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <input type="color" value={accentOverride || themePalette.accent}
+                onChange={(e) => setAccentOverride(e.target.value)}
+                style={{ width: 42, height: 34, padding: 0, border: `1px solid ${themePalette.border}`, borderRadius: 6, cursor: 'pointer', background: 'none' }} />
+              <span style={{ fontSize: 13, color: themePalette.textMuted }}>
+                Used for buttons, tabs, and selections
+              </span>
+              {accentOverride && (
+                <button onClick={() => setAccentOverride(null)}
+                  style={{ fontSize: 12, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline', color: themePalette.textMuted }}>
+                  Reset to theme default
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+              Text size
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {FONT_SCALE_ORDER.map((key) => {
+                const selected = fontScaleKey === key
+                return (
+                  <button key={key} onClick={() => setFontScaleKey(key)}
+                    style={{
+                      cursor: 'pointer', padding: '8px 14px', borderRadius: 8,
+                      border: selected ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                      background: selected ? themePalette.surfaceAlt : themePalette.surface,
+                      fontSize: 13, color: themePalette.text, fontWeight: selected ? 600 : 400,
+                    }}>
+                    {FONT_SCALE_LABELS[key]}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+      </div>
     </div>
   )
 }
