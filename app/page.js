@@ -1,7 +1,8 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { CHARACTERS, ERAS, getCharacter, getChildren, getParents, getSpouses, layoutTree } from '@/lib/characters'
 
 // All 66 books of the Protestant canon, with their USFM code (used to
 // talk to the /api/bible route) and total chapter count (used to build
@@ -143,6 +144,21 @@ export default function HomePage() {
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [splitThemeMenuOpen, setSplitThemeMenuOpen] = useState(false)
 
+  // Characters tab - Family Tree + Timeline views over the curated
+  // CHARACTERS dataset in lib/characters.js. Notes and hidden-character
+  // choices are personal to the signed-in user (character_notes /
+  // character_hidden tables), matching the verse-themes pattern above.
+  const [characterView, setCharacterView] = useState('tree') // 'tree' | 'timeline'
+  const [selectedCharacterId, setSelectedCharacterId] = useState(null)
+  const [hideMinorCharacters, setHideMinorCharacters] = useState(false)
+  const [characterNotes, setCharacterNotes] = useState({}) // character_id -> row
+  const [characterNoteDraft, setCharacterNoteDraft] = useState('')
+  const [savingCharacterNote, setSavingCharacterNote] = useState(false)
+  const [hiddenCharacterIds, setHiddenCharacterIds] = useState([])
+  const [treeZoom, setTreeZoom] = useState(1)
+  const [treePan, setTreePan] = useState({ x: 40, y: 20 })
+  const [treeDragging, setTreeDragging] = useState(false)
+
   // Meditation mode - a full-screen, distraction-free guided flow for a
   // single verse. Steps: 'read' -> 'pause' -> 'stands_out' -> 'apply' ->
   // 'prayer' -> 'review' -> saved (closes). Answers become one note under
@@ -260,6 +276,14 @@ export default function HomePage() {
 
     const { data: vt } = await supabase.from('verse_themes').select('*').eq('user_id', uid).order('theme', { ascending: true })
     setVerseThemes(vt || [])
+
+    const { data: cn } = await supabase.from('character_notes').select('*').eq('user_id', uid)
+    const cnMap = {}
+    ;(cn || []).forEach((n) => { cnMap[n.character_id] = n })
+    setCharacterNotes(cnMap)
+
+    const { data: ch } = await supabase.from('character_hidden').select('character_id').eq('user_id', uid)
+    setHiddenCharacterIds((ch || []).map((r) => r.character_id))
   }, [supabase])
 
   useEffect(() => {
@@ -451,6 +475,104 @@ export default function HomePage() {
   }
 
   const allThemeNames = [...new Set(verseThemes.map((t) => t.theme))].sort((a, b) => a.localeCompare(b))
+
+  // --- Characters tab ---
+
+  async function saveCharacterNote(characterId, text) {
+    if (!user) return
+    setSavingCharacterNote(true)
+    const trimmed = text.trim()
+    if (!trimmed) {
+      // Empty note = remove it entirely rather than storing a blank row.
+      const existing = characterNotes[characterId]
+      if (existing) {
+        await supabase.from('character_notes').delete().eq('id', existing.id)
+        setCharacterNotes((m) => { const next = { ...m }; delete next[characterId]; return next })
+      }
+      setSavingCharacterNote(false)
+      return
+    }
+    const { data, error } = await supabase.from('character_notes').upsert({
+      user_id: user.id, character_id: characterId, note_text: trimmed, updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,character_id' }).select().single()
+    if (!error && data) setCharacterNotes((m) => ({ ...m, [characterId]: data }))
+    setSavingCharacterNote(false)
+  }
+
+  async function toggleHiddenCharacter(characterId) {
+    if (!user) return
+    if (hiddenCharacterIds.includes(characterId)) {
+      await supabase.from('character_hidden').delete().eq('user_id', user.id).eq('character_id', characterId)
+      setHiddenCharacterIds((ids) => ids.filter((id) => id !== characterId))
+    } else {
+      await supabase.from('character_hidden').insert({ user_id: user.id, character_id: characterId })
+      setHiddenCharacterIds((ids) => [...ids, characterId])
+    }
+  }
+
+  function openCharacter(id) {
+    setSelectedCharacterId(id)
+    setCharacterNoteDraft(characterNotes[id]?.note_text || '')
+  }
+
+  // Characters currently shown in both the Family Tree and Timeline views,
+  // after applying the "hide minor figures" toggle and any characters the
+  // user has individually hidden.
+  const visibleCharacters = CHARACTERS.filter((c) => {
+    if (hiddenCharacterIds.includes(c.id)) return false
+    if (hideMinorCharacters && c.significance === 'minor') return false
+    return true
+  })
+  const visibleIds = new Set(visibleCharacters.map((c) => c.id))
+  const treePositions = layoutTree(visibleCharacters)
+  const TREE_NODE_W = 148
+  const TREE_NODE_H = 52
+  const TREE_PAD = 60
+  const treeMaxX = Math.max(0, ...visibleCharacters.map((c) => treePositions[c.id]?.x || 0))
+  const treeMaxY = Math.max(0, ...visibleCharacters.map((c) => treePositions[c.id]?.y || 0))
+  const treeCanvasW = treeMaxX + TREE_NODE_W + TREE_PAD * 2
+  const treeCanvasH = treeMaxY + TREE_NODE_H + TREE_PAD * 2
+
+  function prettyGroupLabel(key) {
+    return key.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase())
+  }
+
+  function handleTreeWheel(e) {
+    e.preventDefault()
+    setTreeZoom((z) => Math.min(2, Math.max(0.4, z - e.deltaY * 0.001)))
+  }
+
+  // A ref (not state) so drag position survives re-renders triggered by
+  // setTreePan while dragging, without itself causing extra re-renders.
+  const treeDragStart = useRef(null)
+  function handleTreeMouseDown(e) {
+    treeDragStart.current = { x: e.clientX, y: e.clientY, panX: treePan.x, panY: treePan.y }
+    setTreeDragging(true)
+  }
+  function handleTreeMouseMove(e) {
+    if (!treeDragStart.current) return
+    const d = treeDragStart.current
+    setTreePan({ x: d.panX + (e.clientX - d.x), y: d.panY + (e.clientY - d.y) })
+  }
+  function handleTreeMouseUp() {
+    treeDragStart.current = null
+    setTreeDragging(false)
+  }
+  function handleTreeTouchStart(e) {
+    const t = e.touches[0]
+    treeDragStart.current = { x: t.clientX, y: t.clientY, panX: treePan.x, panY: treePan.y }
+    setTreeDragging(true)
+  }
+  function handleTreeTouchMove(e) {
+    if (!treeDragStart.current) return
+    const t = e.touches[0]
+    const d = treeDragStart.current
+    setTreePan({ x: d.panX + (t.clientX - d.x), y: d.panY + (t.clientY - d.y) })
+  }
+  function handleTreeTouchEnd() {
+    treeDragStart.current = null
+    setTreeDragging(false)
+  }
 
   // --- Meditation mode ---
 
@@ -947,7 +1069,7 @@ export default function HomePage() {
         <div>
           <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: themePalette.textMuted, marginBottom: 4 }}>Family Bible</div>
           <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
-            {tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'settings' ? 'Settings' : 'Search'}
+            {tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
           </h1>
         </div>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
@@ -959,6 +1081,7 @@ export default function HomePage() {
           { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}` },
           { key: 'search', label: 'Search' },
           { key: 'themes', label: 'Themes' },
+          { key: 'characters', label: 'Characters' },
           { key: 'settings', label: 'Settings' },
         ].map((navTab) => (
           <button key={navTab.key} onClick={() => setTab(navTab.key)}
@@ -1275,6 +1398,252 @@ export default function HomePage() {
               })}
             </>
           )}
+        </div>
+      )}
+
+      {tab === 'characters' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setCharacterView('tree')}
+                style={{
+                  cursor: 'pointer', padding: '7px 14px', borderRadius: 8, fontSize: 13,
+                  border: characterView === 'tree' ? `1px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                  background: characterView === 'tree' ? themePalette.surfaceAlt : themePalette.surface,
+                  color: themePalette.text, fontWeight: characterView === 'tree' ? 600 : 400,
+                }}>
+                Family Tree
+              </button>
+              <button onClick={() => setCharacterView('timeline')}
+                style={{
+                  cursor: 'pointer', padding: '7px 14px', borderRadius: 8, fontSize: 13,
+                  border: characterView === 'timeline' ? `1px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                  background: characterView === 'timeline' ? themePalette.surfaceAlt : themePalette.surface,
+                  color: themePalette.text, fontWeight: characterView === 'timeline' ? 600 : 400,
+                }}>
+                Timeline
+              </button>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: themePalette.textMuted, cursor: 'pointer' }}>
+              <input type="checkbox" checked={hideMinorCharacters} onChange={(e) => setHideMinorCharacters(e.target.checked)} />
+              Hide minor figures
+            </label>
+          </div>
+
+          {characterView === 'tree' && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+                <button onClick={() => setTreeZoom((z) => Math.max(0.4, z - 0.15))}
+                  style={{ cursor: 'pointer', width: 30, height: 30, borderRadius: 6, border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text, fontSize: 16 }}>
+                  −
+                </button>
+                <button onClick={() => { setTreeZoom(1); setTreePan({ x: 40, y: 20 }) }}
+                  style={{ cursor: 'pointer', padding: '0 10px', height: 30, borderRadius: 6, border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text, fontSize: 12 }}>
+                  Reset
+                </button>
+                <button onClick={() => setTreeZoom((z) => Math.min(2, z + 0.15))}
+                  style={{ cursor: 'pointer', width: 30, height: 30, borderRadius: 6, border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text, fontSize: 16 }}>
+                  +
+                </button>
+              </div>
+
+              <div
+                onWheel={handleTreeWheel}
+                onMouseDown={handleTreeMouseDown}
+                onMouseMove={handleTreeMouseMove}
+                onMouseUp={handleTreeMouseUp}
+                onMouseLeave={handleTreeMouseUp}
+                onTouchStart={handleTreeTouchStart}
+                onTouchMove={handleTreeTouchMove}
+                onTouchEnd={handleTreeTouchEnd}
+                style={{
+                  position: 'relative', overflow: 'hidden', height: 480, borderRadius: 12,
+                  border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt,
+                  cursor: treeDragging ? 'grabbing' : 'grab', touchAction: 'none',
+                }}
+              >
+                <div style={{
+                  position: 'absolute', left: 0, top: 0,
+                  width: treeCanvasW, height: treeCanvasH,
+                  transform: `translate(${treePan.x}px, ${treePan.y}px) scale(${treeZoom})`,
+                  transformOrigin: '0 0',
+                }}>
+                  <svg width={treeCanvasW} height={treeCanvasH} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}>
+                    {visibleCharacters.map((c) => c.parentIds.filter((pid) => visibleIds.has(pid)).map((pid) => {
+                      const p1 = treePositions[pid]
+                      const p2 = treePositions[c.id]
+                      if (!p1 || !p2) return null
+                      const x1 = p1.x + TREE_PAD + TREE_NODE_W / 2
+                      const y1 = p1.y + TREE_PAD + TREE_NODE_H
+                      const x2 = p2.x + TREE_PAD + TREE_NODE_W / 2
+                      const y2 = p2.y + TREE_PAD
+                      return <path key={`${pid}-${c.id}`} d={`M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`} stroke={themePalette.border} strokeWidth="1.5" fill="none" />
+                    }))}
+                    {(() => {
+                      // Draw one dashed line per unique spouse pair. Characters
+                      // can have several spouses (e.g. Jacob had four), so this
+                      // walks every spouseIds entry rather than just the first.
+                      const drawn = new Set()
+                      const lines = []
+                      visibleCharacters.forEach((c) => {
+                        c.spouseIds.filter((sid) => visibleIds.has(sid)).forEach((sid) => {
+                          const pairKey = [c.id, sid].sort().join('|')
+                          if (drawn.has(pairKey)) return
+                          drawn.add(pairKey)
+                          const p1 = treePositions[c.id]
+                          const p2 = treePositions[sid]
+                          if (!p1 || !p2 || p1.y !== p2.y) return
+                          const [left, right] = p1.x <= p2.x ? [p1, p2] : [p2, p1]
+                          const y = left.y + TREE_PAD + TREE_NODE_H / 2
+                          const x1 = left.x + TREE_PAD + TREE_NODE_W
+                          const x2 = right.x + TREE_PAD
+                          lines.push(<line key={pairKey} x1={x1} y1={y} x2={x2} y2={y} stroke={resolvedAccent} strokeWidth="1.5" strokeDasharray="3,3" />)
+                        })
+                      })
+                      return lines
+                    })()}
+                  </svg>
+                  {visibleCharacters.map((c) => {
+                    const pos = treePositions[c.id]
+                    if (!pos) return null
+                    return (
+                      <button key={c.id} onClick={() => openCharacter(c.id)}
+                        style={{
+                          position: 'absolute', left: pos.x + TREE_PAD, top: pos.y + TREE_PAD,
+                          width: TREE_NODE_W, minHeight: TREE_NODE_H, cursor: 'pointer',
+                          borderRadius: 8, padding: '6px 10px', textAlign: 'left',
+                          border: selectedCharacterId === c.id ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                          background: c.significance === 'major' ? themePalette.surface : themePalette.chip,
+                          fontFamily: "'Inter', system-ui, sans-serif",
+                        }}>
+                        <div style={{ fontSize: 12, fontWeight: c.significance === 'major' ? 600 : 400, color: themePalette.text, lineHeight: 1.25 }}>{c.name}</div>
+                        {characterNotes[c.id] && <div style={{ fontSize: 10, color: themePalette.textMuted, marginTop: 2 }}>📝 note</div>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <p style={{ fontSize: 12, color: themePalette.textMuted, marginTop: 8 }}>
+                Drag to pan, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses.
+              </p>
+            </div>
+          )}
+
+          {characterView === 'timeline' && (
+            <div>
+              {ERAS.map((era) => {
+                const eraChars = visibleCharacters.filter((c) => c.era === era.key)
+                if (eraChars.length === 0) return null
+                const groups = {}
+                eraChars.forEach((c) => {
+                  if (!groups[c.storyGroup]) groups[c.storyGroup] = []
+                  groups[c.storyGroup].push(c)
+                })
+                return (
+                  <div key={era.key} style={{ marginBottom: 28 }}>
+                    <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 17, margin: '0 0 12px', color: themePalette.text, borderBottom: `1px solid ${themePalette.border}`, paddingBottom: 6 }}>
+                      {era.label}
+                    </h3>
+                    {Object.entries(groups).map(([groupKey, groupChars]) => (
+                      <div key={groupKey} style={{ marginBottom: 12 }}>
+                        {Object.keys(groups).length > 1 && (
+                          <div style={{ fontSize: 11, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                            {prettyGroupLabel(groupKey)}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          {groupChars.map((c) => (
+                            <button key={c.id} onClick={() => openCharacter(c.id)}
+                              style={{
+                                cursor: 'pointer', padding: '7px 12px', borderRadius: 16, fontSize: 13,
+                                border: selectedCharacterId === c.id ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                                background: c.significance === 'major' ? themePalette.surface : themePalette.chip,
+                                color: themePalette.text, fontWeight: c.significance === 'major' ? 600 : 400,
+                                fontFamily: "'Inter', system-ui, sans-serif",
+                              }}>
+                              {c.name}{characterNotes[c.id] ? ' 📝' : ''}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {selectedCharacterId && (() => {
+            const c = getCharacter(selectedCharacterId)
+            if (!c) return null
+            const parents = getParents(c.id)
+            const children = getChildren(c.id)
+            const spouses = getSpouses(c.id)
+            const isHidden = hiddenCharacterIds.includes(c.id)
+            return (
+              <div style={{ marginTop: 20, background: themePalette.surface, border: `1px solid ${themePalette.border}`, borderRadius: 12, padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                  <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 20, margin: 0, color: themePalette.text }}>{c.name}</h3>
+                  <button onClick={() => setSelectedCharacterId(null)}
+                    style={{ cursor: 'pointer', background: 'none', border: 'none', fontSize: 13, color: themePalette.textMuted }}>
+                    Close ✕
+                  </button>
+                </div>
+                <p style={{ fontSize: 14, lineHeight: 1.6, color: themePalette.text, margin: '0 0 14px' }}>{c.blurb}</p>
+
+                {(parents.length > 0 || spouses.length > 0 || children.length > 0) && (
+                  <div style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 14, lineHeight: 1.8 }}>
+                    {parents.length > 0 && (
+                      <div>Parents: {parents.map((p, i) => (
+                        <span key={p.id}>{i > 0 && ', '}<button onClick={() => openCharacter(p.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', padding: 0, color: resolvedAccent, textDecoration: 'underline', fontSize: 13 }}>{p.name}</button></span>
+                      ))}</div>
+                    )}
+                    {spouses.length > 0 && (
+                      <div>Spouse{spouses.length > 1 ? 's' : ''}: {spouses.map((p, i) => (
+                        <span key={p.id}>{i > 0 && ', '}<button onClick={() => openCharacter(p.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', padding: 0, color: resolvedAccent, textDecoration: 'underline', fontSize: 13 }}>{p.name}</button></span>
+                      ))}</div>
+                    )}
+                    {children.length > 0 && (
+                      <div>Children: {children.map((p, i) => (
+                        <span key={p.id}>{i > 0 && ', '}<button onClick={() => openCharacter(p.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', padding: 0, color: resolvedAccent, textDecoration: 'underline', fontSize: 13 }}>{p.name}</button></span>
+                      ))}</div>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                    Your notes
+                  </div>
+                  <textarea
+                    value={characterNoteDraft}
+                    onChange={(e) => setCharacterNoteDraft(e.target.value)}
+                    placeholder="Write a private note or comment about this person..."
+                    rows={3}
+                    style={{
+                      width: '100%', boxSizing: 'border-box', padding: 10, fontSize: 13, borderRadius: 8,
+                      border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
+                      fontFamily: "'Inter', system-ui, sans-serif", resize: 'vertical',
+                    }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                    <button onClick={() => saveCharacterNote(c.id, characterNoteDraft)} disabled={savingCharacterNote}
+                      style={{
+                        cursor: savingCharacterNote ? 'default' : 'pointer', padding: '7px 16px', borderRadius: 8, fontSize: 13,
+                        border: 'none', background: resolvedAccent, color: resolvedOnAccent, fontWeight: 600,
+                        opacity: savingCharacterNote ? 0.7 : 1,
+                      }}>
+                      {savingCharacterNote ? 'Saving...' : 'Save note'}
+                    </button>
+                    <button onClick={() => toggleHiddenCharacter(c.id)}
+                      style={{ cursor: 'pointer', background: 'none', border: 'none', fontSize: 12, color: themePalette.textMuted, textDecoration: 'underline' }}>
+                      {isHidden ? 'Unhide this person' : 'Hide this person'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
 
