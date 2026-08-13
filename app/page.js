@@ -1567,6 +1567,37 @@ export default function HomePage() {
                       })
                       return lines
                     })()}
+                    {(() => {
+                      // Draw a "generations not shown" gap connector for any
+                      // character linked via impliedGapFrom rather than a
+                      // real, fully-documented parentIds link - e.g. Salmon
+                      // is several real generations after Perez, but those
+                      // in-between names aren't individually curated. A
+                      // dotted line with a small (dots) marker bridges the
+                      // two so the lineage still reads as continuous instead
+                      // of the descendant just appearing out of nowhere.
+                      const lines = []
+                      visibleCharacters.forEach((c) => {
+                        if (!c.impliedGapFrom || !visibleIds.has(c.impliedGapFrom)) return
+                        const p1 = treePositions[c.impliedGapFrom]
+                        const p2 = treePositions[c.id]
+                        if (!p1 || !p2) return
+                        const x1 = p1.x + TREE_PAD + TREE_NODE_W / 2
+                        const y1 = p1.y + TREE_PAD + TREE_NODE_H
+                        const x2 = p2.x + TREE_PAD + TREE_NODE_W / 2
+                        const y2 = p2.y + TREE_PAD
+                        const midX = (x1 + x2) / 2
+                        const midY = (y1 + y2) / 2
+                        lines.push(
+                          <g key={`gap-${c.id}`}>
+                            <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} stroke={themePalette.textMuted} strokeWidth="1.5" strokeDasharray="1,4" strokeLinecap="round" fill="none" />
+                            <circle cx={midX} cy={midY} r="9" fill={themePalette.surfaceAlt} stroke={themePalette.textMuted} strokeWidth="1" />
+                            <text x={midX} y={midY + 3} textAnchor="middle" fontSize="10" fill={themePalette.textMuted}>⋯</text>
+                          </g>
+                        )
+                      })
+                      return lines
+                    })()}
                   </svg>
                   {visibleCharacters.map((c) => {
                     const pos = treePositions[c.id]
@@ -1600,7 +1631,7 @@ export default function HomePage() {
                 </div>
               </div>
               <p style={{ fontSize: 12, color: themePalette.textMuted, marginTop: 8 }}>
-                Drag to pan, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses.
+                Drag to pan, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses; dotted lines with ⋯ mean generations in between aren't individually listed.
               </p>
             </div>
           )}
@@ -1670,6 +1701,7 @@ export default function HomePage() {
             const children = getChildren(c.id)
             const spouses = getSpouses(c.id)
             const isHidden = hiddenCharacterIds.includes(c.id)
+            const gapAncestor = c.impliedGapFrom ? getCharacter(c.impliedGapFrom) : null
             return (
               <div style={{ marginTop: 20, background: themePalette.surface, border: `1px solid ${themePalette.border}`, borderRadius: 12, padding: 20 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
@@ -1680,6 +1712,12 @@ export default function HomePage() {
                   </button>
                 </div>
                 <p style={{ fontSize: 14, lineHeight: 1.6, color: themePalette.text, margin: '0 0 14px' }}>{c.blurb}</p>
+
+                {gapAncestor && (
+                  <p style={{ fontSize: 12, color: themePalette.textMuted, margin: '0 0 14px', fontStyle: 'italic' }}>
+                    ⋯ continues the line from <button onClick={() => openCharacter(gapAncestor.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', padding: 0, color: resolvedAccent, textDecoration: 'underline', fontSize: 12, fontStyle: 'italic' }}>{gapAncestor.name}</button> — the generations between them aren't individually listed.
+                  </p>
+                )}
 
                 {(parents.length > 0 || spouses.length > 0 || children.length > 0) && (
                   <div style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 14, lineHeight: 1.8 }}>
