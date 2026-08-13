@@ -155,6 +155,7 @@ export default function HomePage() {
   const [characterNoteDraft, setCharacterNoteDraft] = useState('')
   const [savingCharacterNote, setSavingCharacterNote] = useState(false)
   const [hiddenCharacterIds, setHiddenCharacterIds] = useState([])
+  const [showHiddenManager, setShowHiddenManager] = useState(false)
   const [treeZoom, setTreeZoom] = useState(1)
   const [treePan, setTreePan] = useState({ x: 40, y: 20 })
   const [treeDragging, setTreeDragging] = useState(false)
@@ -1424,11 +1425,46 @@ export default function HomePage() {
                 Timeline
               </button>
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: themePalette.textMuted, cursor: 'pointer' }}>
-              <input type="checkbox" checked={hideMinorCharacters} onChange={(e) => setHideMinorCharacters(e.target.checked)} />
-              Hide minor figures
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: themePalette.textMuted, cursor: 'pointer' }}>
+                <input type="checkbox" checked={hideMinorCharacters} onChange={(e) => setHideMinorCharacters(e.target.checked)} />
+                Hide minor figures
+              </label>
+              {hiddenCharacterIds.length > 0 && (
+                <button onClick={() => setShowHiddenManager((v) => !v)}
+                  style={{ cursor: 'pointer', background: 'none', border: 'none', fontSize: 13, color: resolvedAccent, textDecoration: 'underline', padding: 0 }}>
+                  {hiddenCharacterIds.length} hidden — manage
+                </button>
+              )}
+            </div>
           </div>
+
+          {showHiddenManager && hiddenCharacterIds.length > 0 && (
+            <div style={{
+              marginBottom: 16, padding: 12, borderRadius: 10, border: `1px solid ${themePalette.border}`,
+              background: themePalette.surfaceAlt,
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                Hidden people
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {hiddenCharacterIds.map((id) => {
+                  const c = getCharacter(id)
+                  if (!c) return null
+                  return (
+                    <button key={id} onClick={() => toggleHiddenCharacter(id)}
+                      style={{
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px',
+                        borderRadius: 20, border: `1px solid ${themePalette.border}`, background: themePalette.surface,
+                        color: themePalette.text, fontSize: 12, fontFamily: "'Inter', system-ui, sans-serif",
+                      }}>
+                      {c.name} <span style={{ color: resolvedAccent }}>Unhide</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {characterView === 'tree' && (
             <div>
@@ -1469,16 +1505,45 @@ export default function HomePage() {
                   transformOrigin: '0 0',
                 }}>
                   <svg width={treeCanvasW} height={treeCanvasH} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}>
-                    {visibleCharacters.map((c) => c.parentIds.filter((pid) => visibleIds.has(pid)).map((pid) => {
-                      const p1 = treePositions[pid]
-                      const p2 = treePositions[c.id]
-                      if (!p1 || !p2) return null
-                      const x1 = p1.x + TREE_PAD + TREE_NODE_W / 2
-                      const y1 = p1.y + TREE_PAD + TREE_NODE_H
-                      const x2 = p2.x + TREE_PAD + TREE_NODE_W / 2
-                      const y2 = p2.y + TREE_PAD
-                      return <path key={`${pid}-${c.id}`} d={`M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`} stroke={themePalette.border} strokeWidth="1.5" fill="none" />
-                    }))}
+                    {(() => {
+                      // One connector per FAMILY UNIT (a set of full siblings
+                      // sharing the same parent(s)), instead of one line per
+                      // parent-child pair - so a couple with 3 kids draws a
+                      // single stem + bus + drops, not 3 separate crossing
+                      // lines from each parent to each child.
+                      const units = {}
+                      visibleCharacters.forEach((c) => {
+                        const knownParents = c.parentIds.filter((pid) => visibleIds.has(pid))
+                        if (knownParents.length === 0) return
+                        const key = knownParents.slice().sort().join('|')
+                        if (!units[key]) units[key] = { parentIds: knownParents, childIds: [] }
+                        units[key].childIds.push(c.id)
+                      })
+                      const lines = []
+                      Object.entries(units).forEach(([key, unit]) => {
+                        const parentPositions = unit.parentIds.map((pid) => treePositions[pid]).filter(Boolean)
+                        const childPositions = unit.childIds.map((cid) => treePositions[cid]).filter(Boolean)
+                        if (parentPositions.length === 0 || childPositions.length === 0) return
+                        const parentMidX = parentPositions.reduce((s, p) => s + p.x, 0) / parentPositions.length + TREE_PAD + TREE_NODE_W / 2
+                        const parentY = parentPositions[0].y + TREE_PAD + TREE_NODE_H
+                        const childXs = childPositions.map((p) => p.x + TREE_PAD + TREE_NODE_W / 2)
+                        const childTopY = childPositions[0].y + TREE_PAD
+                        const busY = parentY + (childTopY - parentY) / 2
+                        const minChildX = Math.min(...childXs)
+                        const maxChildX = Math.max(...childXs)
+                        // stem from the parent midpoint down to the bus
+                        lines.push(<line key={`${key}-stem`} x1={parentMidX} y1={parentY} x2={parentMidX} y2={busY} stroke={themePalette.border} strokeWidth="1.5" />)
+                        // horizontal bus spanning the children (skip if only one child directly below)
+                        if (childXs.length > 1 || Math.abs(minChildX - parentMidX) > 2) {
+                          lines.push(<line key={`${key}-bus`} x1={minChildX} y1={busY} x2={maxChildX} y2={busY} stroke={themePalette.border} strokeWidth="1.5" />)
+                        }
+                        // drop from the bus down to each child
+                        childXs.forEach((x, i) => {
+                          lines.push(<line key={`${key}-drop-${unit.childIds[i]}`} x1={x} y1={busY} x2={x} y2={childTopY} stroke={themePalette.border} strokeWidth="1.5" />)
+                        })
+                      })
+                      return lines
+                    })()}
                     {(() => {
                       // Draw one dashed line per unique spouse pair. Characters
                       // can have several spouses (e.g. Jacob had four), so this
@@ -1507,18 +1572,29 @@ export default function HomePage() {
                     const pos = treePositions[c.id]
                     if (!pos) return null
                     return (
-                      <button key={c.id} onClick={() => openCharacter(c.id)}
-                        style={{
-                          position: 'absolute', left: pos.x + TREE_PAD, top: pos.y + TREE_PAD,
-                          width: TREE_NODE_W, minHeight: TREE_NODE_H, cursor: 'pointer',
-                          borderRadius: 8, padding: '6px 10px', textAlign: 'left',
-                          border: selectedCharacterId === c.id ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
-                          background: c.significance === 'major' ? themePalette.surface : themePalette.chip,
-                          fontFamily: "'Inter', system-ui, sans-serif",
-                        }}>
-                        <div style={{ fontSize: 12, fontWeight: c.significance === 'major' ? 600 : 400, color: themePalette.text, lineHeight: 1.25 }}>{c.name}</div>
-                        {characterNotes[c.id] && <div style={{ fontSize: 10, color: themePalette.textMuted, marginTop: 2 }}>📝 note</div>}
-                      </button>
+                      <div key={c.id} style={{ position: 'absolute', left: pos.x + TREE_PAD, top: pos.y + TREE_PAD, width: TREE_NODE_W }}>
+                        <button onClick={() => openCharacter(c.id)}
+                          style={{
+                            width: '100%', minHeight: TREE_NODE_H, cursor: 'pointer',
+                            borderRadius: 8, padding: '6px 10px', textAlign: 'left',
+                            border: selectedCharacterId === c.id ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                            background: c.significance === 'major' ? themePalette.surface : themePalette.chip,
+                            fontFamily: "'Inter', system-ui, sans-serif",
+                          }}>
+                          <div style={{ fontSize: 12, fontWeight: c.significance === 'major' ? 600 : 400, color: themePalette.text, lineHeight: 1.25 }}>{c.name}</div>
+                          {characterNotes[c.id] && <div style={{ fontSize: 10, color: themePalette.textMuted, marginTop: 2 }}>📝 note</div>}
+                        </button>
+                        <button
+                          title="Hide this person"
+                          onClick={(e) => { e.stopPropagation(); toggleHiddenCharacter(c.id) }}
+                          style={{
+                            position: 'absolute', top: -6, right: -6, width: 18, height: 18, cursor: 'pointer',
+                            borderRadius: '50%', border: `1px solid ${themePalette.border}`, background: themePalette.surface,
+                            color: themePalette.textMuted, fontSize: 10, lineHeight: '16px', padding: 0,
+                          }}>
+                          ✕
+                        </button>
+                      </div>
                     )
                   })}
                 </div>
@@ -1553,16 +1629,30 @@ export default function HomePage() {
                         )}
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                           {groupChars.map((c) => (
-                            <button key={c.id} onClick={() => openCharacter(c.id)}
-                              style={{
-                                cursor: 'pointer', padding: '7px 12px', borderRadius: 16, fontSize: 13,
-                                border: selectedCharacterId === c.id ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
-                                background: c.significance === 'major' ? themePalette.surface : themePalette.chip,
-                                color: themePalette.text, fontWeight: c.significance === 'major' ? 600 : 400,
-                                fontFamily: "'Inter', system-ui, sans-serif",
-                              }}>
-                              {c.name}{characterNotes[c.id] ? ' 📝' : ''}
-                            </button>
+                            <div key={c.id} style={{
+                              display: 'flex', alignItems: 'center', borderRadius: 16,
+                              border: selectedCharacterId === c.id ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                              background: c.significance === 'major' ? themePalette.surface : themePalette.chip,
+                              overflow: 'hidden',
+                            }}>
+                              <button onClick={() => openCharacter(c.id)}
+                                style={{
+                                  cursor: 'pointer', padding: '7px 4px 7px 12px', fontSize: 13, border: 'none', background: 'transparent',
+                                  color: themePalette.text, fontWeight: c.significance === 'major' ? 600 : 400,
+                                  fontFamily: "'Inter', system-ui, sans-serif",
+                                }}>
+                                {c.name}{characterNotes[c.id] ? ' 📝' : ''}
+                              </button>
+                              <button
+                                title="Hide this person"
+                                onClick={() => toggleHiddenCharacter(c.id)}
+                                style={{
+                                  cursor: 'pointer', border: 'none', background: 'transparent', color: themePalette.textMuted,
+                                  fontSize: 11, padding: '7px 10px 7px 2px',
+                                }}>
+                                ✕
+                              </button>
+                            </div>
                           ))}
                         </div>
                       </div>
