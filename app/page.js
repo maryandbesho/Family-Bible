@@ -198,10 +198,12 @@ export default function HomePage() {
   const [notes, setNotes] = useState([])
   const [replies, setReplies] = useState({}) // note_id -> [reply, ...]
   const [bookmark, setBookmark] = useState(null)
-  // Read tab: books/chapters browser overlay. bookBrowserOpen toggles the
-  // whole overlay; browserSelectedBook is null while showing the 66-book
-  // grid, or a book name while drilled into that book's chapter grid.
-  const [bookBrowserOpen, setBookBrowserOpen] = useState(false)
+  // Read tab: books -> chapters -> reading flow. readStage controls which
+  // view is shown; the books grid is the tab's landing view (per Mary's
+  // request), chapters is a drill-in per selected book, and reading is the
+  // normal reading pane. Re-entering the Read tab always resets to 'books'
+  // (see the useEffect below, near the other tab-driven effects).
+  const [readStage, setReadStage] = useState('books')
   const [browserSelectedBook, setBrowserSelectedBook] = useState(null)
 
   // Verse themes ("folders") - each row tags one verse with one theme
@@ -441,6 +443,15 @@ export default function HomePage() {
   useEffect(() => {
     if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, bibleLang)
   }, [splitOn, splitBook, splitChapter, bibleLang, fetchChapter])
+
+  // Read tab always lands on the books browser first (per Mary's request);
+  // reset out of a mid-read state whenever the Read tab is (re)entered.
+  useEffect(() => {
+    if (tab === 'read') {
+      setReadStage('books')
+      setBrowserSelectedBook(null)
+    }
+  }, [tab])
 
   // When viewing a theme folder, make sure each tagged verse's chapter
   // text is loaded so we can show the actual verse, not just the reference.
@@ -1481,14 +1492,79 @@ export default function HomePage() {
       )}
 
       {tab === 'read' && (<>
-      {bookmark && (
-        <p style={{ fontSize: 13, marginBottom: 16 }}>
-          🔖 Resume: {bookmark.book} {bookmark.chapter}:{bookmark.verse}{' '}
-          <button onClick={() => { setBook(bookmark.book); setChapter(bookmark.chapter); setSelectedVerse(bookmark.verse) }} style={{ cursor: 'pointer' }}>Go</button>
-        </p>
+
+      {readStage === 'books' && (
+        <div>
+          {bookmark && (
+            <p style={{ fontSize: 13, marginBottom: 16 }}>
+              🔖 Resume: {bookmark.book} {bookmark.chapter}:{bookmark.verse}{' '}
+              <button
+                onClick={() => { setBook(bookmark.book); setChapter(bookmark.chapter); setSelectedVerse(bookmark.verse); setReadStage('reading') }}
+                style={{ cursor: 'pointer' }}>
+                Go
+              </button>
+            </p>
+          )}
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Choose a book</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
+            {BOOK_LIST.map((b) => {
+              const isBookmarked = bookmark && bookmark.book === b
+              return (
+                <button key={b} onClick={() => { setBrowserSelectedBook(b); setReadStage('chapters') }}
+                  style={{
+                    cursor: 'pointer', fontSize: 12, padding: '8px 6px', borderRadius: 6, textAlign: 'left',
+                    border: `1px solid ${isBookmarked ? resolvedAccent : themePalette.border}`,
+                    background: isBookmarked ? themePalette.chip : themePalette.surface,
+                    color: themePalette.text,
+                  }}>
+                  {isBookmarked ? '🔖 ' : ''}{b}
+                </button>
+              )
+            })}
+          </div>
+        </div>
       )}
 
+      {readStage === 'chapters' && (
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>
+            <span onClick={() => setReadStage('books')} style={{ cursor: 'pointer', textDecoration: 'underline', opacity: 0.75, fontWeight: 400 }}>
+              All books
+            </span>
+            {' / '}{browserSelectedBook}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(44px, 1fr))', gap: 8 }}>
+            {chaptersFor(browserSelectedBook).map((c) => {
+              const isCurrent = book === browserSelectedBook && chapter === c
+              const isBookmarkedChapter = bookmark && bookmark.book === browserSelectedBook && bookmark.chapter === c
+              return (
+                <button key={c}
+                  onClick={() => { setBook(browserSelectedBook); setChapter(c); setSelectedVerse(null); setReadStage('reading') }}
+                  style={{
+                    cursor: 'pointer', fontSize: 12, padding: '8px 0', borderRadius: 6, textAlign: 'center', position: 'relative',
+                    border: `1px solid ${isCurrent ? resolvedAccent : themePalette.border}`,
+                    background: isCurrent ? resolvedAccent : themePalette.surface,
+                    color: isCurrent ? resolvedOnAccent : themePalette.text,
+                    fontWeight: isCurrent ? 700 : 400,
+                  }}>
+                  {c}
+                  {isBookmarkedChapter && (
+                    <span style={{ position: 'absolute', top: -6, right: -2, fontSize: 10 }}>🔖</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {readStage === 'reading' && (<>
+
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button onClick={() => { setReadStage('books'); setBrowserSelectedBook(null) }}
+          style={{ fontSize: 12, cursor: 'pointer' }}>
+          📖 Browse books
+        </button>
         <select value={book} onChange={(e) => { setBook(e.target.value); setChapter(chaptersFor(e.target.value)[0]); setSelectedVerse(null) }}>
           {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
@@ -1511,79 +1587,11 @@ export default function HomePage() {
             العربية
           </button>
         </div>
-        <button onClick={() => { setBrowserSelectedBook(null); setBookBrowserOpen(true) }}
-          style={{ fontSize: 12, cursor: 'pointer' }}>
-          📖 Browse books
-        </button>
         <button onClick={() => setSplitOn((s) => !s)}
           style={{ marginLeft: 'auto', fontSize: 12, cursor: 'pointer' }}>
           {splitOn ? '✕ Exit split view' : '⬛ Split view'}
         </button>
       </div>
-
-      {bookBrowserOpen && (
-        <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 16, marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>
-              {browserSelectedBook == null
-                ? 'All books'
-                : (
-                  <span>
-                    <span onClick={() => setBrowserSelectedBook(null)} style={{ cursor: 'pointer', textDecoration: 'underline', opacity: 0.75, fontWeight: 400 }}>
-                      All books
-                    </span>
-                    {' / '}{browserSelectedBook}
-                  </span>
-                )}
-            </div>
-            <button onClick={() => setBookBrowserOpen(false)} style={{ cursor: 'pointer', fontSize: 12, background: 'none', border: 'none', textDecoration: 'underline' }}>
-              Close
-            </button>
-          </div>
-
-          {browserSelectedBook == null ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
-              {BOOK_LIST.map((b) => {
-                const isBookmarked = bookmark && bookmark.book === b
-                return (
-                  <button key={b} onClick={() => setBrowserSelectedBook(b)}
-                    style={{
-                      cursor: 'pointer', fontSize: 12, padding: '8px 6px', borderRadius: 6, textAlign: 'left',
-                      border: `1px solid ${isBookmarked ? resolvedAccent : themePalette.border}`,
-                      background: isBookmarked ? themePalette.chip : themePalette.surface,
-                      color: themePalette.text,
-                    }}>
-                    {isBookmarked ? '🔖 ' : ''}{b}
-                  </button>
-                )
-              })}
-            </div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(44px, 1fr))', gap: 8 }}>
-              {chaptersFor(browserSelectedBook).map((c) => {
-                const isCurrent = book === browserSelectedBook && chapter === c
-                const isBookmarkedChapter = bookmark && bookmark.book === browserSelectedBook && bookmark.chapter === c
-                return (
-                  <button key={c}
-                    onClick={() => { setBook(browserSelectedBook); setChapter(c); setSelectedVerse(null); setBookBrowserOpen(false) }}
-                    style={{
-                      cursor: 'pointer', fontSize: 12, padding: '8px 0', borderRadius: 6, textAlign: 'center', position: 'relative',
-                      border: `1px solid ${isCurrent ? resolvedAccent : themePalette.border}`,
-                      background: isCurrent ? resolvedAccent : themePalette.surface,
-                      color: isCurrent ? resolvedOnAccent : themePalette.text,
-                      fontWeight: isCurrent ? 700 : 400,
-                    }}>
-                    {c}
-                    {isBookmarkedChapter && (
-                      <span style={{ position: 'absolute', top: -6, right: -2, fontSize: 10 }}>🔖</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
       <div style={{ flex: '1 1 300px', minWidth: 280 }}>
@@ -1653,6 +1661,8 @@ export default function HomePage() {
         </div>
       )}
       </div>
+      </>)}
+
       </>)}
 
       {tab === 'prayers' && (
