@@ -85,6 +85,71 @@ function contrastText(hex) {
   return yiq >= 150 ? '#1B1D24' : '#FFFFFF'
 }
 
+// --- Home dashboard helpers (streak / weekly tracking / reading plan) ---
+// Pure date/logic functions, unit-tested in isolation before wiring in.
+function toDateStr(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+function daysAgoDate(n, from = new Date()) {
+  const d = new Date(from)
+  d.setDate(d.getDate() - n)
+  return d
+}
+// Current daily streak: consecutive days with a reading_log entry, walking
+// backward from today. If today has no entry yet, the streak is still
+// considered "alive" (counts from yesterday) so it doesn't zero out the
+// moment the clock rolls over before she's read that day.
+function computeStreak(dateStrings, today = new Date()) {
+  const set = new Set(dateStrings)
+  const todayStr = toDateStr(today)
+  let cursor = set.has(todayStr) ? new Date(today) : daysAgoDate(1, today)
+  let streak = 0
+  while (set.has(toDateStr(cursor))) { streak++; cursor = daysAgoDate(1, cursor) }
+  return streak
+}
+function last7Days(dateStrings, today = new Date()) {
+  const set = new Set(dateStrings)
+  const out = []
+  for (let i = 6; i >= 0; i--) {
+    const d = daysAgoDate(i, today)
+    out.push({ date: toDateStr(d), read: set.has(toDateStr(d)) })
+  }
+  return out
+}
+// Buckets a date into "weeks ago" relative to today (0 = current 7-day
+// window ending today, 1 = the 7 days before that, etc.)
+function weeksAgoBucket(dateStr, today = new Date()) {
+  const d = new Date(dateStr + 'T00:00:00')
+  const t = new Date(toDateStr(today) + 'T00:00:00')
+  return Math.floor((t - d) / 86400000 / 7)
+}
+// Weekly streak over the last N weeks ("over a month" = 5 weeks): whether
+// each week bucket has at least one log entry, plus a consecutive-weeks
+// streak counted the same lenient way as the daily streak above.
+function computeWeeklyStreak(dateStrings, weekCount = 5, today = new Date()) {
+  const buckets = new Set()
+  dateStrings.forEach((ds) => buckets.add(weeksAgoBucket(ds, today)))
+  const weeks = []
+  for (let i = weekCount - 1; i >= 0; i--) weeks.push({ weeksAgo: i, has: buckets.has(i) })
+  let cursor = buckets.has(0) ? 0 : 1
+  let streak = 0
+  while (buckets.has(cursor)) { streak++; cursor++ }
+  return { weeks, streak }
+}
+function daysSince(dateStr, today = new Date()) {
+  if (!dateStr) return null
+  const d = new Date(dateStr + 'T00:00:00')
+  const t = new Date(toDateStr(today) + 'T00:00:00')
+  return Math.floor((t - d) / 86400000)
+}
+function findCurrentPlanIndex(plan, bookmark) {
+  if (!bookmark) return -1
+  return plan.findIndex((p) => p.book === bookmark.book && p.chapter === bookmark.chapter)
+}
+
 export default function HomePage() {
   const router = useRouter()
   const supabase = createClient()
@@ -93,7 +158,7 @@ export default function HomePage() {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const [tab, setTab] = useState('read') // 'read' | 'prayers'
+  const [tab, setTab] = useState('home') // 'home' | 'read' | 'prayers' | ...
 
   // Reading language for the whole app. 'en' = NKJV (NT) + Brenton
   // Septuagint (OT). 'ar' = Smith & Van Dyck Arabic (whole Bible).
@@ -159,6 +224,27 @@ export default function HomePage() {
   const [treeZoom, setTreeZoom] = useState(1)
   const [treePan, setTreePan] = useState({ x: 40, y: 20 })
   const [treeDragging, setTreeDragging] = useState(false)
+
+  // Home dashboard: reading streak (auto-tracked), an editable reading
+  // plan, and confession/communion logs. All personal to the signed-in
+  // user, matching the character_notes/character_hidden pattern (no
+  // family_id, RLS scoped to auth.uid()).
+  const [readingLog, setReadingLog] = useState([]) // array of 'YYYY-MM-DD' strings
+  const [readingPlan, setReadingPlan] = useState([]) // [{id, position, book, chapter, label}]
+  const [planAddBook, setPlanAddBook] = useState('Genesis')
+  const [planAddChapter, setPlanAddChapter] = useState(1)
+  const [planAddLabel, setPlanAddLabel] = useState('')
+  const [savingPlanItem, setSavingPlanItem] = useState(false)
+  const [confessionLog, setConfessionLog] = useState([]) // [{id, log_date, note}], newest first
+  const [confessionFormOpen, setConfessionFormOpen] = useState(false)
+  const [confessionDateDraft, setConfessionDateDraft] = useState('')
+  const [confessionNoteDraft, setConfessionNoteDraft] = useState('')
+  const [showConfessionHistory, setShowConfessionHistory] = useState(false)
+  const [communionLog, setCommunionLog] = useState([]) // [{id, log_date, note}], newest first
+  const [communionFormOpen, setCommunionFormOpen] = useState(false)
+  const [communionDateDraft, setCommunionDateDraft] = useState('')
+  const [communionNoteDraft, setCommunionNoteDraft] = useState('')
+  const [showCommunionHistory, setShowCommunionHistory] = useState(false)
 
   // Meditation mode - a full-screen, distraction-free guided flow for a
   // single verse. Steps: 'read' -> 'pause' -> 'stands_out' -> 'apply' ->
@@ -285,6 +371,18 @@ export default function HomePage() {
 
     const { data: ch } = await supabase.from('character_hidden').select('character_id').eq('user_id', uid)
     setHiddenCharacterIds((ch || []).map((r) => r.character_id))
+
+    const { data: rl } = await supabase.from('reading_log').select('read_date').eq('user_id', uid)
+    setReadingLog((rl || []).map((r) => r.read_date))
+
+    const { data: rp2 } = await supabase.from('reading_plan_items').select('*').eq('user_id', uid).order('position', { ascending: true })
+    setReadingPlan(rp2 || [])
+
+    const { data: cf } = await supabase.from('confession_log').select('*').eq('user_id', uid).order('log_date', { ascending: false })
+    setConfessionLog(cf || [])
+
+    const { data: cm } = await supabase.from('communion_log').select('*').eq('user_id', uid).order('log_date', { ascending: false })
+    setCommunionLog(cm || [])
   }, [supabase])
 
   useEffect(() => {
@@ -327,6 +425,13 @@ export default function HomePage() {
   useEffect(() => {
     if (book && chapter) fetchChapter(book, chapter, bibleLang)
   }, [book, chapter, bibleLang, fetchChapter])
+
+  // Auto-track the reading streak: count today as "read" the first time
+  // the primary pane opens a chapter this session.
+  useEffect(() => {
+    if (user && book && chapter) logReadingToday()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, book, chapter])
 
   useEffect(() => {
     if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, bibleLang)
@@ -452,6 +557,98 @@ export default function HomePage() {
       user_id: user.id, book: b, chapter: c, verse: v, updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' }).select().single()
     if (data) setBookmark(data)
+  }
+
+  // Logs today as a "read" day for the streak, once per day (checked
+  // client-side against readingLog; the table also has a unique
+  // constraint on user_id+read_date as a safety net against duplicates).
+  async function logReadingToday() {
+    if (!user) return
+    const todayStr = toDateStr(new Date())
+    if (readingLog.includes(todayStr)) return
+    const { error } = await supabase.from('reading_log').insert({ user_id: user.id, read_date: todayStr })
+    if (!error) setReadingLog((log) => [...log, todayStr])
+  }
+
+  // --- Reading plan (editable, "as I please") ---
+  async function addPlanItem() {
+    if (!user || savingPlanItem) return
+    setSavingPlanItem(true)
+    const nextPosition = readingPlan.length > 0 ? Math.max(...readingPlan.map((p) => p.position)) + 1 : 0
+    const { data, error } = await supabase.from('reading_plan_items').insert({
+      user_id: user.id, position: nextPosition, book: planAddBook, chapter: planAddChapter,
+      label: planAddLabel.trim() || null,
+    }).select().single()
+    if (!error && data) {
+      setReadingPlan((plan) => [...plan, data])
+      setPlanAddLabel('')
+    }
+    setSavingPlanItem(false)
+  }
+
+  async function deletePlanItem(id) {
+    const { error } = await supabase.from('reading_plan_items').delete().eq('id', id)
+    if (!error) setReadingPlan((plan) => plan.filter((p) => p.id !== id))
+  }
+
+  // Swaps this item's position with its neighbor in the given direction,
+  // persisting both rows so the new order survives a reload.
+  async function movePlanItem(id, direction) {
+    const sorted = [...readingPlan].sort((a, b) => a.position - b.position)
+    const idx = sorted.findIndex((p) => p.id === id)
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (idx === -1 || swapIdx < 0 || swapIdx >= sorted.length) return
+    const a = sorted[idx], b = sorted[swapIdx]
+    const [posA, posB] = [a.position, b.position]
+    const { error } = await supabase.from('reading_plan_items').upsert([
+      { ...a, position: posB }, { ...b, position: posA },
+    ])
+    if (!error) {
+      setReadingPlan((plan) => plan.map((p) => {
+        if (p.id === a.id) return { ...p, position: posB }
+        if (p.id === b.id) return { ...p, position: posA }
+        return p
+      }))
+    }
+  }
+
+  function goToPlanItem(item) {
+    setBook(item.book); setChapter(item.chapter); setSelectedVerse(null); setTab('read')
+  }
+
+  // --- Confession & communion logs (personal sacrament tracking) ---
+  async function addConfessionEntry() {
+    if (!user) return
+    const dateStr = confessionDateDraft || toDateStr(new Date())
+    const { data, error } = await supabase.from('confession_log').insert({
+      user_id: user.id, log_date: dateStr, note: confessionNoteDraft.trim() || null,
+    }).select().single()
+    if (!error && data) {
+      setConfessionLog((log) => [data, ...log].sort((a, b) => b.log_date.localeCompare(a.log_date)))
+      setConfessionDateDraft(''); setConfessionNoteDraft(''); setConfessionFormOpen(false)
+    }
+  }
+
+  async function deleteConfessionEntry(id) {
+    const { error } = await supabase.from('confession_log').delete().eq('id', id)
+    if (!error) setConfessionLog((log) => log.filter((c) => c.id !== id))
+  }
+
+  async function addCommunionEntry() {
+    if (!user) return
+    const dateStr = communionDateDraft || toDateStr(new Date())
+    const { data, error } = await supabase.from('communion_log').insert({
+      user_id: user.id, log_date: dateStr, note: communionNoteDraft.trim() || null,
+    }).select().single()
+    if (!error && data) {
+      setCommunionLog((log) => [data, ...log].sort((a, b) => b.log_date.localeCompare(a.log_date)))
+      setCommunionDateDraft(''); setCommunionNoteDraft(''); setCommunionFormOpen(false)
+    }
+  }
+
+  async function deleteCommunionEntry(id) {
+    const { error } = await supabase.from('communion_log').delete().eq('id', id)
+    if (!error) setCommunionLog((log) => log.filter((c) => c.id !== id))
   }
 
   // Tags a verse with a theme name, creating the "folder" the first time
@@ -1062,6 +1259,16 @@ export default function HomePage() {
     themeMenuOpen: splitThemeMenuOpen, setThemeMenuOpen: setSplitThemeMenuOpen,
   }
 
+  // Home dashboard derived values
+  const readingStreak = computeStreak(readingLog)
+  const readingLast7 = last7Days(readingLog)
+  const sortedPlan = [...readingPlan].sort((a, b) => a.position - b.position)
+  const currentPlanIndex = findCurrentPlanIndex(sortedPlan, bookmark)
+  const communionWeekly = computeWeeklyStreak(communionLog.map((c) => c.log_date), 5)
+  const cardStyle = { background: themePalette.surface, border: `1px solid ${themePalette.border}`, borderRadius: 12, padding: 20, marginBottom: 20 }
+  const cardHeaderStyle = { fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 14px', color: themePalette.text }
+  const iconBtnStyle = { cursor: 'pointer', background: 'none', border: `1px solid ${themePalette.border}`, borderRadius: 6, width: 24, height: 24, fontSize: 12, color: themePalette.textMuted, lineHeight: 1 }
+
   return (
     <div style={{ minHeight: '100vh', background: themePalette.bg, color: themePalette.text, fontFamily: "'Inter', system-ui, sans-serif" }}>
       <style>{FONT_IMPORT_CSS}</style>
@@ -1070,7 +1277,7 @@ export default function HomePage() {
         <div>
           <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: themePalette.textMuted, marginBottom: 4 }}>Family Bible</div>
           <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
-            {tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
+            {tab === 'home' ? 'Home' : tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
           </h1>
         </div>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
@@ -1078,6 +1285,7 @@ export default function HomePage() {
 
       <div style={{ display: 'flex', gap: 2, marginBottom: 28, borderBottom: `1px solid ${themePalette.border}`, overflowX: 'auto' }}>
         {[
+          { key: 'home', label: 'Home' },
           { key: 'read', label: 'Read' },
           { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}` },
           { key: 'search', label: 'Search' },
@@ -1096,6 +1304,176 @@ export default function HomePage() {
           </button>
         ))}
       </div>
+
+      {tab === 'home' && (
+        <div>
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>🔥 Reading Streak</h3>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+              <div style={{ fontSize: 40, fontWeight: 700, color: resolvedAccent, lineHeight: 1, fontFamily: "'Lora', Georgia, serif" }}>{readingStreak}</div>
+              <div style={{ fontSize: 14, color: themePalette.textMuted }}>{readingStreak === 1 ? 'day' : 'days'} in a row</div>
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {readingLast7.map((d) => (
+                <div key={d.date} title={d.date} style={{
+                  width: 30, height: 30, borderRadius: 7,
+                  background: d.read ? resolvedAccent : themePalette.chip,
+                  border: `1px solid ${themePalette.border}`,
+                }} />
+              ))}
+            </div>
+            {readingStreak === 0 && (
+              <p style={{ fontSize: 12, color: themePalette.textMuted, marginTop: 10, marginBottom: 0 }}>
+                Open a chapter to read today and start a new streak.
+              </p>
+            )}
+          </div>
+
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>📖 Reading Plan</h3>
+            {bookmark && (
+              <div style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 12 }}>
+                Currently reading: <strong style={{ color: themePalette.text }}>{bookmark.book} {bookmark.chapter}:{bookmark.verse}</strong>
+              </div>
+            )}
+            {sortedPlan.length === 0 ? (
+              <p style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 14 }}>No plan yet — add chapters below to build your own.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 16 }}>
+                {sortedPlan.map((item, i) => {
+                  const isCurrent = i === currentPlanIndex
+                  const isDone = currentPlanIndex >= 0 && i < currentPlanIndex
+                  return (
+                    <div key={item.id} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                      padding: '6px 10px', borderRadius: 8,
+                      background: isCurrent ? themePalette.chip : 'transparent',
+                      border: isCurrent ? `1px solid ${resolvedAccent}` : '1px solid transparent',
+                    }}>
+                      <button onClick={() => goToPlanItem(item)}
+                        style={{ cursor: 'pointer', background: 'none', border: 'none', textAlign: 'left', flex: 1, padding: 0, fontFamily: "'Inter', system-ui, sans-serif" }}>
+                        <span style={{ fontSize: 13, color: isDone ? themePalette.textMuted : themePalette.text, textDecoration: isDone ? 'line-through' : 'none' }}>
+                          {isDone ? '✓ ' : isCurrent ? '📍 ' : ''}{item.book} {item.chapter}{item.label ? ` — ${item.label}` : ''}
+                        </span>
+                      </button>
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                        <button onClick={() => movePlanItem(item.id, 'up')} disabled={i === 0} style={{ ...iconBtnStyle, opacity: i === 0 ? 0.4 : 1 }}>↑</button>
+                        <button onClick={() => movePlanItem(item.id, 'down')} disabled={i === sortedPlan.length - 1} style={{ ...iconBtnStyle, opacity: i === sortedPlan.length - 1 ? 0.4 : 1 }}>↓</button>
+                        <button onClick={() => deletePlanItem(item.id)} style={{ ...iconBtnStyle, color: themePalette.danger }}>✕</button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', paddingTop: 12, borderTop: `1px solid ${themePalette.hairline}` }}>
+              <select value={planAddBook} onChange={(e) => { setPlanAddBook(e.target.value); setPlanAddChapter(chaptersFor(e.target.value)[0]) }}>
+                {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+              <select value={planAddChapter} onChange={(e) => setPlanAddChapter(Number(e.target.value))}>
+                {chaptersFor(planAddBook).map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input value={planAddLabel} onChange={(e) => setPlanAddLabel(e.target.value)} placeholder="Label (optional)"
+                style={{ flex: 1, minWidth: 100, padding: 6, boxSizing: 'border-box' }} />
+              <button onClick={addPlanItem} disabled={savingPlanItem} style={{ cursor: 'pointer' }}>
+                {savingPlanItem ? 'Adding...' : '+ Add'}
+              </button>
+            </div>
+          </div>
+
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>✝️ Confession</h3>
+            {confessionLog.length > 0 ? (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 15, color: themePalette.text }}>
+                  Last confession: <strong>{new Date(confessionLog[0].log_date + 'T00:00:00').toLocaleDateString()}</strong>
+                </div>
+                <div style={{ fontSize: 12, color: themePalette.textMuted }}>{daysSince(confessionLog[0].log_date)} days ago</div>
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 12 }}>No confessions logged yet.</p>
+            )}
+            {!confessionFormOpen ? (
+              <button onClick={() => { setConfessionDateDraft(toDateStr(new Date())); setConfessionFormOpen(true) }} style={{ cursor: 'pointer' }}>
+                + Log confession
+              </button>
+            ) : (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input type="date" value={confessionDateDraft} onChange={(e) => setConfessionDateDraft(e.target.value)} />
+                <input value={confessionNoteDraft} onChange={(e) => setConfessionNoteDraft(e.target.value)} placeholder="Note (optional)" style={{ padding: 6 }} />
+                <button onClick={addConfessionEntry} style={{ cursor: 'pointer' }}>Save</button>
+                <button onClick={() => setConfessionFormOpen(false)} style={{ cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted }}>Cancel</button>
+              </div>
+            )}
+            {confessionLog.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <button onClick={() => setShowConfessionHistory((s) => !s)}
+                  style={{ fontSize: 12, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline', color: themePalette.textMuted, padding: 0 }}>
+                  {showConfessionHistory ? 'Hide' : 'Show'} history ({confessionLog.length})
+                </button>
+                {showConfessionHistory && confessionLog.map((c) => (
+                  <div key={c.id} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${themePalette.hairline}` }}>
+                    <span>{new Date(c.log_date + 'T00:00:00').toLocaleDateString()}{c.note ? ` — ${c.note}` : ''}</span>
+                    <button onClick={() => deleteConfessionEntry(c.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', color: themePalette.danger, fontSize: 11 }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>🍞 Communion</h3>
+            {communionLog.length > 0 ? (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 15, color: themePalette.text }}>
+                  Last communion: <strong>{new Date(communionLog[0].log_date + 'T00:00:00').toLocaleDateString()}</strong>
+                  <span style={{ fontSize: 12, color: themePalette.textMuted }}> ({daysSince(communionLog[0].log_date)} days ago)</span>
+                </div>
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 12 }}>No communion logged yet.</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '10px 0' }}>
+              {communionWeekly.weeks.map((w) => (
+                <div key={w.weeksAgo} title={w.weeksAgo === 0 ? 'This week' : `${w.weeksAgo} week(s) ago`} style={{
+                  width: 28, height: 28, borderRadius: '50%',
+                  background: w.has ? resolvedAccent : themePalette.chip,
+                  border: `1px solid ${themePalette.border}`,
+                }} />
+              ))}
+              <span style={{ fontSize: 13, color: themePalette.textMuted, marginLeft: 6 }}>
+                {communionWeekly.streak} week{communionWeekly.streak === 1 ? '' : 's'} in a row
+              </span>
+            </div>
+            {!communionFormOpen ? (
+              <button onClick={() => { setCommunionDateDraft(toDateStr(new Date())); setCommunionFormOpen(true) }} style={{ cursor: 'pointer' }}>
+                + Log communion
+              </button>
+            ) : (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input type="date" value={communionDateDraft} onChange={(e) => setCommunionDateDraft(e.target.value)} />
+                <input value={communionNoteDraft} onChange={(e) => setCommunionNoteDraft(e.target.value)} placeholder="Note (optional)" style={{ padding: 6 }} />
+                <button onClick={addCommunionEntry} style={{ cursor: 'pointer' }}>Save</button>
+                <button onClick={() => setCommunionFormOpen(false)} style={{ cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted }}>Cancel</button>
+              </div>
+            )}
+            {communionLog.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <button onClick={() => setShowCommunionHistory((s) => !s)}
+                  style={{ fontSize: 12, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline', color: themePalette.textMuted, padding: 0 }}>
+                  {showCommunionHistory ? 'Hide' : 'Show'} history ({communionLog.length})
+                </button>
+                {showCommunionHistory && communionLog.map((c) => (
+                  <div key={c.id} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${themePalette.hairline}` }}>
+                    <span>{new Date(c.log_date + 'T00:00:00').toLocaleDateString()}{c.note ? ` — ${c.note}` : ''}</span>
+                    <button onClick={() => deleteCommunionEntry(c.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', color: themePalette.danger, fontSize: 11 }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {tab === 'read' && (<>
       {bookmark && (
