@@ -198,6 +198,11 @@ export default function HomePage() {
   const [notes, setNotes] = useState([])
   const [replies, setReplies] = useState({}) // note_id -> [reply, ...]
   const [bookmark, setBookmark] = useState(null)
+  // Read tab: books/chapters browser overlay. bookBrowserOpen toggles the
+  // whole overlay; browserSelectedBook is null while showing the 66-book
+  // grid, or a book name while drilled into that book's chapter grid.
+  const [bookBrowserOpen, setBookBrowserOpen] = useState(false)
+  const [browserSelectedBook, setBrowserSelectedBook] = useState(null)
 
   // Verse themes ("folders") - each row tags one verse with one theme
   // name, personal to the signed-in user. allThemeNames is the distinct
@@ -1506,11 +1511,79 @@ export default function HomePage() {
             العربية
           </button>
         </div>
+        <button onClick={() => { setBrowserSelectedBook(null); setBookBrowserOpen(true) }}
+          style={{ fontSize: 12, cursor: 'pointer' }}>
+          📖 Browse books
+        </button>
         <button onClick={() => setSplitOn((s) => !s)}
           style={{ marginLeft: 'auto', fontSize: 12, cursor: 'pointer' }}>
           {splitOn ? '✕ Exit split view' : '⬛ Split view'}
         </button>
       </div>
+
+      {bookBrowserOpen && (
+        <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 16, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              {browserSelectedBook == null
+                ? 'All books'
+                : (
+                  <span>
+                    <span onClick={() => setBrowserSelectedBook(null)} style={{ cursor: 'pointer', textDecoration: 'underline', opacity: 0.75, fontWeight: 400 }}>
+                      All books
+                    </span>
+                    {' / '}{browserSelectedBook}
+                  </span>
+                )}
+            </div>
+            <button onClick={() => setBookBrowserOpen(false)} style={{ cursor: 'pointer', fontSize: 12, background: 'none', border: 'none', textDecoration: 'underline' }}>
+              Close
+            </button>
+          </div>
+
+          {browserSelectedBook == null ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
+              {BOOK_LIST.map((b) => {
+                const isBookmarked = bookmark && bookmark.book === b
+                return (
+                  <button key={b} onClick={() => setBrowserSelectedBook(b)}
+                    style={{
+                      cursor: 'pointer', fontSize: 12, padding: '8px 6px', borderRadius: 6, textAlign: 'left',
+                      border: `1px solid ${isBookmarked ? resolvedAccent : themePalette.border}`,
+                      background: isBookmarked ? themePalette.chip : themePalette.surface,
+                      color: themePalette.text,
+                    }}>
+                    {isBookmarked ? '🔖 ' : ''}{b}
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(44px, 1fr))', gap: 8 }}>
+              {chaptersFor(browserSelectedBook).map((c) => {
+                const isCurrent = book === browserSelectedBook && chapter === c
+                const isBookmarkedChapter = bookmark && bookmark.book === browserSelectedBook && bookmark.chapter === c
+                return (
+                  <button key={c}
+                    onClick={() => { setBook(browserSelectedBook); setChapter(c); setSelectedVerse(null); setBookBrowserOpen(false) }}
+                    style={{
+                      cursor: 'pointer', fontSize: 12, padding: '8px 0', borderRadius: 6, textAlign: 'center', position: 'relative',
+                      border: `1px solid ${isCurrent ? resolvedAccent : themePalette.border}`,
+                      background: isCurrent ? resolvedAccent : themePalette.surface,
+                      color: isCurrent ? resolvedOnAccent : themePalette.text,
+                      fontWeight: isCurrent ? 700 : 400,
+                    }}>
+                    {c}
+                    {isBookmarkedChapter && (
+                      <span style={{ position: 'absolute', top: -6, right: -2, fontSize: 10 }}>🔖</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
       <div style={{ flex: '1 1 300px', minWidth: 280 }}>
