@@ -53,8 +53,22 @@ const chaptersFor = (book) => {
 const chapterCacheKey = (book, chapter, lang) => `${lang}-${book}-${chapter}`
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
+// Reverses a vKey ("Book-chapter-verse") back into {book, chapter, verse}.
+// Safe because no book name in BOOK_META contains a literal hyphen -
+// verified against the full list above.
+function parseVKey(key) {
+  const parts = key.split('-')
+  const verse = Number(parts.pop())
+  const chapter = Number(parts.pop())
+  const book = parts.join('-')
+  return { book, chapter, verse }
+}
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
 const summaryKey = (b, c) => `${b}-${c}`
+// Leitner-box spaced repetition intervals (days until next review), keyed
+// by box number 1-5. Correct answer advances a box (capped at 5);
+// incorrect resets to box 1.
+const MEMORY_BOX_INTERVALS = { 1: 1, 2: 2, 3: 4, 4: 8, 5: 14 }
 
 // Verse of the Day - a curated, deterministic pool of well-known verses.
 // The same verse shows for the whole family on a given calendar day (picked
@@ -135,6 +149,13 @@ function daysAgoDate(n, from = new Date()) {
   const d = new Date(from)
   d.setDate(d.getDate() - n)
   return d
+}
+// Next review date string for a Leitner box, N days out from "from".
+function nextReviewDateStr(box, from = new Date()) {
+  const days = MEMORY_BOX_INTERVALS[box] || 1
+  const d = new Date(from)
+  d.setDate(d.getDate() + days)
+  return toDateStr(d)
 }
 // Picks today's Verse of the Day entry - deterministic by day-of-year so
 // it's the same for every family member on a given calendar day.
@@ -310,6 +331,18 @@ export default function HomePage() {
   const [meditationPauseLeft, setMeditationPauseLeft] = useState(45)
   const meditationSteps = ['read', 'pause', 'stands_out', 'apply', 'prayer', 'review']
 
+  // Verse memorization flashcards - Leitner-style spaced repetition,
+  // personal to the signed-in user (matches character_notes pattern: no
+  // family_id, RLS scoped to auth.uid()).
+  const [memoryVerses, setMemoryVerses] = useState([]) // [{id, book, chapter, verse, box, next_review_date, correct_count}]
+  const [memoryAddBook, setMemoryAddBook] = useState('Genesis')
+  const [memoryAddChapter, setMemoryAddChapter] = useState(1)
+  const [memoryAddVerse, setMemoryAddVerse] = useState(1)
+  const [savingMemoryVerse, setSavingMemoryVerse] = useState(false)
+  const [studyIndex, setStudyIndex] = useState(0)
+  const [studyFlipped, setStudyFlipped] = useState(false)
+  const [showAllFlashcards, setShowAllFlashcards] = useState(false)
+
   // Prayer list
   const [prayers, setPrayers] = useState([])
   const [showAnswered, setShowAnswered] = useState(false)
@@ -363,6 +396,14 @@ export default function HomePage() {
   const [displayNameDraft, setDisplayNameDraft] = useState('')
   const [savingDisplayName, setSavingDisplayName] = useState(false)
   const [familyRoster, setFamilyRoster] = useState([]) // [{id, display_name}]
+
+  // Data export/import (Settings) - a personal JSON backup covering the
+  // categories listed in buildExportPayload() below. Import is additive
+  // only: it never updates or deletes existing rows.
+  const [exporting, setExporting] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importSummary, setImportSummary] = useState(null) // {added: {...}} or {error}
+  const importFileRef = useRef(null)
 
   // Tracks viewport width so the nav can switch between a left sidebar
   // (wide screens) and the existing horizontal scrollable tab bar (narrow
@@ -480,6 +521,9 @@ export default function HomePage() {
 
     const { data: cm } = await supabase.from('communion_log').select('*').eq('user_id', uid).order('log_date', { ascending: false })
     setCommunionLog(cm || [])
+
+    const { data: mv } = await supabase.from('memory_verses').select('*').eq('user_id', uid).order('next_review_date', { ascending: true })
+    setMemoryVerses(mv || [])
   }, [supabase])
 
   useEffect(() => {
@@ -574,6 +618,37 @@ export default function HomePage() {
       setBrowserSelectedBook(null)
     }
   }, [tab])
+
+  // Verse memorization: cards due today, oldest-due first. Recomputed
+  // every render from memoryVerses state (same pattern as activityFeed).
+  const dueMemoryVerses = memoryVerses
+    .filter((m) => m.next_review_date <= toDateStr(new Date()))
+    .sort((a, b) => a.next_review_date.localeCompare(b.next_review_date))
+
+  // Memorize tab always lands on a fresh study session, matching the Read
+  // tab's "always land fresh" pattern.
+  useEffect(() => {
+    if (tab === 'memorize') {
+      setStudyIndex(0)
+      setStudyFlipped(false)
+    }
+  }, [tab])
+
+  // Keeps studyIndex in range as cards are graded out of the due list, so
+  // grading the last card doesn't leave the index pointing past the end.
+  useEffect(() => {
+    setStudyIndex((i) => (dueMemoryVerses.length === 0 ? 0 : Math.min(i, dueMemoryVerses.length - 1)))
+  }, [dueMemoryVerses.length])
+
+  // Fetches chapter text for the flashcard currently shown in Practice, so
+  // "Show verse" can reveal it right away (fetchChapter no-ops if the
+  // chapter is already cached).
+  useEffect(() => {
+    if (tab !== 'memorize') return
+    const card = dueMemoryVerses[studyIndex]
+    if (!card) return
+    fetchChapter(card.book, card.chapter, bibleLang)
+  }, [tab, studyIndex, dueMemoryVerses, bibleLang, fetchChapter])
 
   // When viewing a theme folder, make sure each tagged verse's chapter
   // text is loaded so we can show the actual verse, not just the reference.
@@ -811,6 +886,54 @@ export default function HomePage() {
   }
 
   const allThemeNames = [...new Set(verseThemes.map((t) => t.theme))].sort((a, b) => a.localeCompare(b))
+
+  // --- Verse memorization flashcards ---
+
+  async function addMemoryVerse(b, c, v) {
+    if (!user) return
+    const verseNum = Number(v)
+    if (!verseNum) return
+    if (memoryVerses.some((m) => m.book === b && m.chapter === c && m.verse === verseNum)) {
+      alert('That verse is already in your flashcards.')
+      return
+    }
+    setSavingMemoryVerse(true)
+    try {
+      const { data, error } = await supabase.from('memory_verses').insert({
+        user_id: user.id, book: b, chapter: c, verse: verseNum,
+      }).select().single()
+      if (error) throw error
+      setMemoryVerses((mv) => [...mv, data])
+    } catch (err) {
+      alert('Could not add flashcard: ' + err.message)
+    } finally {
+      setSavingMemoryVerse(false)
+    }
+  }
+
+  async function deleteMemoryVerse(id) {
+    if (!confirm('Delete this flashcard?')) return
+    const { error } = await supabase.from('memory_verses').delete().eq('id', id)
+    if (!error) setMemoryVerses((mv) => mv.filter((m) => m.id !== id))
+  }
+
+  // Grades the currently-shown due card: correct advances the Leitner box
+  // (capped at 5), incorrect resets to box 1. next_review_date is
+  // recomputed from the new box each time.
+  async function gradeMemoryVerse(id, correct) {
+    const target = memoryVerses.find((m) => m.id === id)
+    if (!target) return
+    const newBox = correct ? Math.min(5, target.box + 1) : 1
+    const newCorrectCount = correct ? target.correct_count + 1 : target.correct_count
+    const nextDate = nextReviewDateStr(newBox)
+    const { data, error } = await supabase.from('memory_verses').update({
+      box: newBox, next_review_date: nextDate, correct_count: newCorrectCount,
+    }).eq('id', id).select().single()
+    if (!error && data) {
+      setMemoryVerses((mv) => mv.map((m) => (m.id === id ? data : m)))
+      setStudyFlipped(false)
+    }
+  }
 
   // --- Characters tab ---
 
@@ -1110,6 +1233,205 @@ export default function HomePage() {
     }
   }
 
+  // --- Data export / import (Settings) ---
+  // Gathers every personal data category into one JSON object for backup.
+  // Deliberately excludes chapter_summaries (shared/global, not personal),
+  // the current bookmark (importing an old backup shouldn't silently move
+  // where you're reading), and display_name (shouldn't silently overwrite it).
+  function buildExportPayload() {
+    return {
+      exported_at: new Date().toISOString(),
+      notes: notes.filter((n) => n.user_id === user.id),
+      highlights: Object.entries(highlights).map(([key, color]) => ({ ...parseVKey(key), color })),
+      prayers: prayers.filter((p) => p.user_id === user.id),
+      verse_themes: verseThemes,
+      character_notes: Object.values(characterNotes),
+      hidden_characters: hiddenCharacterIds,
+      reading_log: readingLog,
+      reading_plan: readingPlan,
+      confession_log: confessionLog,
+      communion_log: communionLog,
+      memory_verses: memoryVerses,
+    }
+  }
+
+  function downloadExport() {
+    setExporting(true)
+    try {
+      const payload = buildExportPayload()
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `family-bible-backup-${toDateStr(new Date())}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      alert('Could not build backup file: ' + err.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // Imports a backup file, adding only rows that don't already exist
+  // locally (matched per category by natural fields, never by id). Always
+  // insert-only - never updates or deletes existing data - and always
+  // stamped with the CURRENTLY signed-in user's id, so it can't move data
+  // between accounts (RLS would reject a foreign user_id in any case).
+  async function importBackupFile(file) {
+    if (!user || !file) return
+    setImporting(true)
+    setImportSummary(null)
+    try {
+      const text = await file.text()
+      const payload = JSON.parse(text)
+      const added = {}
+
+      const newNotes = (payload.notes || []).filter((n) =>
+        !notes.some((existing) => existing.book === n.book && existing.chapter === n.chapter && existing.verse === n.verse && existing.text === n.text)
+      )
+      if (newNotes.length > 0) {
+        const rows = newNotes.map((n) => ({
+          user_id: user.id, family_id: n.scope === 'family' ? (profile?.family_id || null) : null,
+          scope: n.scope || 'personal', book: n.book, chapter: n.chapter, verse: n.verse, text: n.text,
+          image_url: n.image_url || null,
+          link_book: n.link_book || null, link_chapter: n.link_chapter || null, link_verse: n.link_verse || null, link_type: n.link_type || null,
+        }))
+        const { data, error } = await supabase.from('notes').insert(rows).select()
+        if (error) throw error
+        setNotes((prev) => [...(data || []), ...prev])
+        added.notes = data?.length || 0
+      }
+
+      const newHighlights = (payload.highlights || []).filter((h) => !highlights[vKey(h.book, h.chapter, h.verse)])
+      if (newHighlights.length > 0) {
+        const rows = newHighlights.map((h) => ({ user_id: user.id, book: h.book, chapter: h.chapter, verse: h.verse, color: h.color }))
+        const { data, error } = await supabase.from('highlights').insert(rows).select()
+        if (error) throw error
+        setHighlights((prev) => {
+          const next = { ...prev }
+          ;(data || []).forEach((h) => { next[vKey(h.book, h.chapter, h.verse)] = h.color })
+          return next
+        })
+        added.highlights = data?.length || 0
+      }
+
+      const newPrayers = (payload.prayers || []).filter((p) =>
+        !prayers.some((existing) => existing.title === p.title && existing.details === p.details)
+      )
+      if (newPrayers.length > 0) {
+        const rows = newPrayers.map((p) => ({
+          user_id: user.id, family_id: p.is_shared ? (profile?.family_id || null) : null,
+          title: p.title, details: p.details || null, category: p.category || 'Other', is_shared: !!p.is_shared,
+          verse_book: p.verse_book || null, verse_chapter: p.verse_chapter || null, verse_verse: p.verse_verse || null,
+        }))
+        const { data, error } = await supabase.from('prayers').insert(rows).select()
+        if (error) throw error
+        setPrayers((prev) => [...(data || []), ...prev])
+        added.prayers = data?.length || 0
+      }
+
+      const newThemes = (payload.verse_themes || []).filter((t) =>
+        !verseThemes.some((existing) => existing.book === t.book && existing.chapter === t.chapter && existing.verse === t.verse && existing.theme === t.theme)
+      )
+      if (newThemes.length > 0) {
+        const rows = newThemes.map((t) => ({ user_id: user.id, book: t.book, chapter: t.chapter, verse: t.verse, theme: t.theme }))
+        const { data, error } = await supabase.from('verse_themes').insert(rows).select()
+        if (error) throw error
+        setVerseThemes((prev) => [...prev, ...(data || [])])
+        added.verse_themes = data?.length || 0
+      }
+
+      const newCharNotes = (payload.character_notes || []).filter((n) => !characterNotes[n.character_id])
+      if (newCharNotes.length > 0) {
+        const rows = newCharNotes.map((n) => ({ user_id: user.id, character_id: n.character_id, note_text: n.note_text }))
+        const { data, error } = await supabase.from('character_notes').insert(rows).select()
+        if (error) throw error
+        setCharacterNotes((prev) => {
+          const next = { ...prev }
+          ;(data || []).forEach((n) => { next[n.character_id] = n })
+          return next
+        })
+        added.character_notes = data?.length || 0
+      }
+
+      const newHidden = (payload.hidden_characters || []).filter((id) => !hiddenCharacterIds.includes(id))
+      if (newHidden.length > 0) {
+        const rows = newHidden.map((id) => ({ user_id: user.id, character_id: id }))
+        const { error } = await supabase.from('character_hidden').insert(rows)
+        if (error) throw error
+        setHiddenCharacterIds((prev) => [...prev, ...newHidden])
+        added.hidden_characters = newHidden.length
+      }
+
+      const newLogDates = (payload.reading_log || []).filter((d) => !readingLog.includes(d))
+      if (newLogDates.length > 0) {
+        const rows = newLogDates.map((d) => ({ user_id: user.id, read_date: d }))
+        const { error } = await supabase.from('reading_log').insert(rows)
+        if (error) throw error
+        setReadingLog((prev) => [...prev, ...newLogDates])
+        added.reading_log = newLogDates.length
+      }
+
+      const newPlanItems = (payload.reading_plan || []).filter((p) =>
+        !readingPlan.some((existing) => existing.book === p.book && existing.chapter === p.chapter && existing.label === p.label)
+      )
+      if (newPlanItems.length > 0) {
+        let nextPos = readingPlan.length > 0 ? Math.max(...readingPlan.map((p) => p.position)) + 1 : 0
+        const rows = newPlanItems.map((p) => ({ user_id: user.id, position: nextPos++, book: p.book, chapter: p.chapter, label: p.label || null }))
+        const { data, error } = await supabase.from('reading_plan_items').insert(rows).select()
+        if (error) throw error
+        setReadingPlan((prev) => [...prev, ...(data || [])].sort((a, b) => a.position - b.position))
+        added.reading_plan = data?.length || 0
+      }
+
+      const newConfessions = (payload.confession_log || []).filter((c) =>
+        !confessionLog.some((existing) => existing.log_date === c.log_date && existing.note === c.note)
+      )
+      if (newConfessions.length > 0) {
+        const rows = newConfessions.map((c) => ({ user_id: user.id, log_date: c.log_date, note: c.note || null }))
+        const { data, error } = await supabase.from('confession_log').insert(rows).select()
+        if (error) throw error
+        setConfessionLog((prev) => [...(data || []), ...prev].sort((a, b) => b.log_date.localeCompare(a.log_date)))
+        added.confession_log = data?.length || 0
+      }
+
+      const newCommunions = (payload.communion_log || []).filter((c) =>
+        !communionLog.some((existing) => existing.log_date === c.log_date && existing.note === c.note)
+      )
+      if (newCommunions.length > 0) {
+        const rows = newCommunions.map((c) => ({ user_id: user.id, log_date: c.log_date, note: c.note || null }))
+        const { data, error } = await supabase.from('communion_log').insert(rows).select()
+        if (error) throw error
+        setCommunionLog((prev) => [...(data || []), ...prev].sort((a, b) => b.log_date.localeCompare(a.log_date)))
+        added.communion_log = data?.length || 0
+      }
+
+      const newMemVerses = (payload.memory_verses || []).filter((m) =>
+        !memoryVerses.some((existing) => existing.book === m.book && existing.chapter === m.chapter && existing.verse === m.verse)
+      )
+      if (newMemVerses.length > 0) {
+        const rows = newMemVerses.map((m) => ({
+          user_id: user.id, book: m.book, chapter: m.chapter, verse: m.verse,
+          box: m.box || 1, next_review_date: m.next_review_date || toDateStr(new Date()), correct_count: m.correct_count || 0,
+        }))
+        const { data, error } = await supabase.from('memory_verses').insert(rows).select()
+        if (error) throw error
+        setMemoryVerses((prev) => [...prev, ...(data || [])])
+        added.memory_verses = data?.length || 0
+      }
+
+      setImportSummary({ added })
+    } catch (err) {
+      setImportSummary({ error: err.message })
+    } finally {
+      setImporting(false)
+      if (importFileRef.current) importFileRef.current.value = ''
+    }
+  }
+
   // Combines recent family-shared notes, shared prayers, and chapter
   // summary edits into one reverse-chronological Activity Feed, capped to
   // the 12 most recent items. Personal-only data (confession/communion
@@ -1202,6 +1524,9 @@ export default function HomePage() {
                 </button>
                 <button onClick={() => startMeditation(p.book, p.chapter, v.n, v.t)} style={{ fontSize: 12, cursor: 'pointer' }}>
                   🧘 Meditate
+                </button>
+                <button onClick={() => addMemoryVerse(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>
+                  📇 Memorize
                 </button>
               </div>
 
@@ -1502,6 +1827,7 @@ export default function HomePage() {
   const ALL_NAV_TABS = [
     { key: 'home', label: 'Home', group: 'Today' },
     { key: 'read', label: 'Read', group: 'Today' },
+    { key: 'memorize', label: `Memorize${dueMemoryVerses.length > 0 ? ` (${dueMemoryVerses.length})` : ''}`, group: 'Today' },
     { key: 'search', label: 'Search', group: 'Today' },
     { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}`, group: 'Family & Faith' },
     { key: 'themes', label: 'Themes', group: 'Family & Faith' },
@@ -1510,7 +1836,7 @@ export default function HomePage() {
   ]
   // Kid Mode trims the nav down to the essentials; Settings always stays
   // reachable so the toggle can be turned back off.
-  const KID_MODE_TABS = ['home', 'read', 'prayers', 'settings']
+  const KID_MODE_TABS = ['home', 'read', 'memorize', 'prayers', 'settings']
   const visibleNavTabs = kidMode ? ALL_NAV_TABS.filter((t) => KID_MODE_TABS.includes(t.key)) : ALL_NAV_TABS
   const navGroupOrder = ['Today', 'Family & Faith', 'App']
   const navGroups = navGroupOrder
@@ -1527,7 +1853,7 @@ export default function HomePage() {
             Family Bible{kidMode ? ' · Kid Mode' : ''}
           </div>
           <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
-            {tab === 'home' ? 'Home' : tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
+            {tab === 'home' ? 'Home' : tab === 'read' ? 'Reading' : tab === 'memorize' ? 'Memorize' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
           </h1>
         </div>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
@@ -1975,6 +2301,93 @@ export default function HomePage() {
       </>)}
 
       </>)}
+
+  {tab === 'memorize' && (
+        <div>
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>Practice</h3>
+            {dueMemoryVerses.length === 0 ? (
+              <p style={{ fontSize: 13, opacity: 0.6 }}>
+                {memoryVerses.length === 0
+                  ? "No flashcards yet - add a verse below to get started."
+                  : "Nothing due right now. Come back later, or add another verse below."}
+              </p>
+            ) : (() => {
+              const card = dueMemoryVerses[studyIndex]
+              const verseText = themeVerseText(card.book, card.chapter, card.verse)
+              return (
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10 }}>
+                    Card {studyIndex + 1} of {dueMemoryVerses.length}
+                  </div>
+                  <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 20, textAlign: 'center', marginBottom: 12 }}>
+                    <div style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, marginBottom: studyFlipped ? 12 : 0 }}>
+                      {card.book} {card.chapter}:{card.verse}
+                    </div>
+                    {studyFlipped && (
+                      <div style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 15, lineHeight: 1.6 }}>
+                        {verseText || 'Loading verse...'}
+                      </div>
+                    )}
+                  </div>
+                  {!studyFlipped ? (
+                    <button onClick={() => setStudyFlipped(true)} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+                      Show verse
+                    </button>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      <button onClick={() => gradeMemoryVerse(card.id, true)} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+                        ✅ Got it
+                      </button>
+                      <button onClick={() => gradeMemoryVerse(card.id, false)} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+                        🔁 Still learning
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+          </div>
+
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>➕ Add a verse</h3>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <select value={memoryAddBook} onChange={(e) => { setMemoryAddBook(e.target.value); setMemoryAddChapter(chaptersFor(e.target.value)[0]) }}>
+                {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+              </select>
+              <select value={memoryAddChapter} onChange={(e) => setMemoryAddChapter(Number(e.target.value))}>
+                {chaptersFor(memoryAddBook).map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input type="number" min={1} value={memoryAddVerse} onChange={(e) => setMemoryAddVerse(e.target.value)} style={{ width: 50 }} />
+              <button onClick={() => addMemoryVerse(memoryAddBook, memoryAddChapter, memoryAddVerse)} disabled={savingMemoryVerse} style={{ cursor: 'pointer', padding: '6px 14px' }}>
+                {savingMemoryVerse ? 'Adding...' : 'Add'}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <button onClick={() => setShowAllFlashcards((s) => !s)} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline' }}>
+              {showAllFlashcards ? 'Hide' : 'Show'} all flashcards ({memoryVerses.length})
+            </button>
+            {showAllFlashcards && (
+              <div style={{ marginTop: 12 }}>
+                {memoryVerses.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No flashcards yet.</p>}
+                {memoryVerses.map((m) => (
+                  <div key={m.id} style={{ fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${themePalette.hairline}` }}>
+                    <div>
+                      <strong>{m.book} {m.chapter}:{m.verse}</strong>
+                      <div style={{ fontSize: 11, opacity: 0.6 }}>Box {m.box} · Next review {m.next_review_date}</div>
+                    </div>
+                    <button onClick={() => deleteMemoryVerse(m.id)} style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {tab === 'prayers' && (
         <div>
@@ -2549,6 +2962,38 @@ export default function HomePage() {
 
       {tab === 'settings' && (
         <div style={{ maxWidth: 480 }}>
+          <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Backup your data</h3>
+          <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 12px' }}>
+            Download a personal backup file, or restore one on this account. Import only adds what's missing - it never changes or deletes anything already here.
+          </p>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+            <button onClick={downloadExport} disabled={exporting} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+              {exporting ? 'Preparing...' : '⬇ Download backup'}
+            </button>
+            <button onClick={() => importFileRef.current && importFileRef.current.click()} disabled={importing}
+              style={{ cursor: 'pointer', padding: '8px 16px' }}>
+              {importing ? 'Restoring...' : '⬆ Restore from backup'}
+            </button>
+            <input ref={importFileRef} type="file" accept="application/json" style={{ display: 'none' }}
+              onChange={(e) => { if (e.target.files && e.target.files[0]) importBackupFile(e.target.files[0]) }} />
+          </div>
+          {importSummary && (
+            <div style={{ fontSize: 12, background: themePalette.surfaceAlt, borderRadius: 8, padding: 10, marginBottom: 32 }}>
+              {importSummary.error ? (
+                <span style={{ color: themePalette.danger }}>Could not restore backup: {importSummary.error}</span>
+              ) : Object.keys(importSummary.added).length === 0 ? (
+                <span>Nothing new to add - everything in that backup is already here.</span>
+              ) : (
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Added:</div>
+                  {Object.entries(importSummary.added).map(([cat, n]) => (
+                    <div key={cat}>{n} {cat.replace(/_/g, ' ')}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Your name</h3>
           <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 12px' }}>
             Shown to family members in the Family Activity feed on Home.
