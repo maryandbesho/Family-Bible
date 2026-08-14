@@ -56,6 +56,44 @@ const vKey = (b, c, v) => `${b}-${c}-${v}`
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
 const summaryKey = (b, c) => `${b}-${c}`
 
+// Verse of the Day - a curated, deterministic pool of well-known verses.
+// The same verse shows for the whole family on a given calendar day (picked
+// by day-of-year), so it's consistent across everyone's device without
+// needing a server-side scheduler.
+const VERSE_OF_DAY = [
+  { book: 'Psalms', chapter: 23, verse: 1 }, { book: 'John', chapter: 3, verse: 16 },
+  { book: 'Philippians', chapter: 4, verse: 13 }, { book: 'Proverbs', chapter: 3, verse: 5 },
+  { book: 'Joshua', chapter: 1, verse: 9 }, { book: 'Romans', chapter: 8, verse: 28 },
+  { book: 'Isaiah', chapter: 41, verse: 10 }, { book: 'Psalms', chapter: 46, verse: 1 },
+  { book: 'Jeremiah', chapter: 29, verse: 11 }, { book: 'Matthew', chapter: 6, verse: 33 },
+  { book: '1 Corinthians', chapter: 13, verse: 4 }, { book: 'Galatians', chapter: 5, verse: 22 },
+  { book: 'Psalms', chapter: 119, verse: 105 }, { book: 'Proverbs', chapter: 16, verse: 3 },
+  { book: 'Isaiah', chapter: 40, verse: 31 }, { book: 'Matthew', chapter: 11, verse: 28 },
+  { book: 'Romans', chapter: 12, verse: 2 }, { book: 'Psalms', chapter: 34, verse: 8 },
+  { book: '2 Corinthians', chapter: 5, verse: 17 }, { book: 'John', chapter: 14, verse: 27 },
+  { book: 'Philippians', chapter: 4, verse: 6 }, { book: 'Psalms', chapter: 27, verse: 1 },
+  { book: 'Proverbs', chapter: 22, verse: 6 }, { book: 'Deuteronomy', chapter: 31, verse: 6 },
+  { book: 'Psalms', chapter: 121, verse: 1 }, { book: 'Hebrews', chapter: 11, verse: 1 },
+  { book: 'James', chapter: 1, verse: 5 }, { book: 'Psalms', chapter: 91, verse: 1 },
+  { book: 'Matthew', chapter: 5, verse: 16 }, { book: 'Romans', chapter: 15, verse: 13 },
+  { book: 'Psalms', chapter: 37, verse: 4 }, { book: 'Ephesians', chapter: 2, verse: 8 },
+  { book: 'Psalms', chapter: 139, verse: 14 }, { book: 'Isaiah', chapter: 26, verse: 3 },
+  { book: 'Matthew', chapter: 7, verse: 7 }, { book: 'Psalms', chapter: 100, verse: 1 },
+  { book: '1 Peter', chapter: 5, verse: 7 }, { book: 'Psalms', chapter: 55, verse: 22 },
+  { book: 'Colossians', chapter: 3, verse: 23 }, { book: 'Psalms', chapter: 16, verse: 11 },
+  { book: '2 Timothy', chapter: 1, verse: 7 }, { book: 'Psalms', chapter: 62, verse: 1 },
+  { book: 'Matthew', chapter: 28, verse: 20 }, { book: 'Psalms', chapter: 143, verse: 8 },
+  { book: 'Micah', chapter: 6, verse: 8 }, { book: 'Psalms', chapter: 4, verse: 8 },
+  { book: 'Luke', chapter: 1, verse: 37 }, { book: 'Psalms', chapter: 73, verse: 26 },
+  { book: 'Nahum', chapter: 1, verse: 7 }, { book: 'Psalms', chapter: 103, verse: 2 },
+  { book: 'Habakkuk', chapter: 3, verse: 19 }, { book: 'Psalms', chapter: 84, verse: 11 },
+  { book: 'Zephaniah', chapter: 3, verse: 17 }, { book: 'Psalms', chapter: 145, verse: 18 },
+  { book: 'John', chapter: 1, verse: 5 }, { book: 'Psalms', chapter: 25, verse: 4 },
+  { book: 'John', chapter: 15, verse: 5 }, { book: 'Psalms', chapter: 90, verse: 12 },
+  { book: 'Acts', chapter: 1, verse: 8 }, { book: 'Psalms', chapter: 34, verse: 18 },
+]
+
+
 // Curated color themes for the Settings tab. Each theme provides a full
 // set of tokens used throughout the app (page background, card surfaces,
 // text, borders, and an accent color for buttons/tabs/selection).
@@ -97,6 +135,13 @@ function daysAgoDate(n, from = new Date()) {
   const d = new Date(from)
   d.setDate(d.getDate() - n)
   return d
+}
+// Picks today's Verse of the Day entry - deterministic by day-of-year so
+// it's the same for every family member on a given calendar day.
+function verseOfDayEntry(today = new Date()) {
+  const start = new Date(today.getFullYear(), 0, 0)
+  const dayOfYear = Math.floor((today - start) / 86400000)
+  return VERSE_OF_DAY[dayOfYear % VERSE_OF_DAY.length]
 }
 // Current daily streak: consecutive days with a reading_log entry, walking
 // backward from today. If today has no entry yet, the streak is still
@@ -299,14 +344,49 @@ export default function HomePage() {
   const [accentOverride, setAccentOverride] = useState(null)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
+  // Kid Mode - a simplified experience for younger family members.
+  // Trims the main nav down to Home/Read/Prayers/Settings and boosts the
+  // reading font size. Saved to this device's localStorage like the other
+  // appearance settings above.
+  const [kidMode, setKidMode] = useState(false)
+
+  // Daily reading reminder - a gentle in-app banner on Home if today's
+  // reading hasn't been logged yet, plus an OPT-IN best-effort browser
+  // notification (only fires while this tab is open on this device; there
+  // is no server-side push infrastructure behind this).
+  const [reminderNotifyOn, setReminderNotifyOn] = useState(false)
+  const [reminderFiredToday, setReminderFiredToday] = useState(false)
+
+  // Display name (Settings) + family roster, used to attribute Activity
+  // Feed items ("Mary added a prayer") instead of a raw user id. Falls
+  // back to "A family member" anywhere a name hasn't been set.
+  const [displayNameDraft, setDisplayNameDraft] = useState('')
+  const [savingDisplayName, setSavingDisplayName] = useState(false)
+  const [familyRoster, setFamilyRoster] = useState([]) // [{id, display_name}]
+
+  // Tracks viewport width so the nav can switch between a left sidebar
+  // (wide screens) and the existing horizontal scrollable tab bar (narrow
+  // / mobile screens).
+  const [isWide, setIsWide] = useState(true)
+  useEffect(() => {
+    const check = () => setIsWide(window.innerWidth >= 820)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
+
   useEffect(() => {
     try {
       const savedTheme = window.localStorage.getItem('fb_theme')
       const savedFont = window.localStorage.getItem('fb_font_scale')
       const savedAccent = window.localStorage.getItem('fb_accent')
+      const savedKidMode = window.localStorage.getItem('fb_kid_mode')
+      const savedNotify = window.localStorage.getItem('fb_notify_enabled')
       if (savedTheme && THEMES[savedTheme]) setThemeKey(savedTheme)
       if (savedFont && FONT_SCALES[savedFont]) setFontScaleKey(savedFont)
       if (savedAccent) setAccentOverride(savedAccent)
+      if (savedKidMode === '1') setKidMode(true)
+      if (savedNotify === '1') setReminderNotifyOn(true)
     } catch (e) { /* localStorage unavailable */ }
     setSettingsLoaded(true)
   }, [])
@@ -329,10 +409,20 @@ export default function HomePage() {
     } catch (e) {}
   }, [accentOverride, settingsLoaded])
 
+  useEffect(() => {
+    if (!settingsLoaded) return
+    try { window.localStorage.setItem('fb_kid_mode', kidMode ? '1' : '0') } catch (e) {}
+  }, [kidMode, settingsLoaded])
+
+  useEffect(() => {
+    if (!settingsLoaded) return
+    try { window.localStorage.setItem('fb_notify_enabled', reminderNotifyOn ? '1' : '0') } catch (e) {}
+  }, [reminderNotifyOn, settingsLoaded])
+
   const themePalette = THEMES[themeKey] || THEMES.parchment
   const resolvedAccent = accentOverride || themePalette.accent
   const resolvedOnAccent = accentOverride ? contrastText(accentOverride) : themePalette.onAccent
-  const fontScale = FONT_SCALES[fontScaleKey] || 1
+  const fontScale = (FONT_SCALES[fontScaleKey] || 1) * (kidMode ? 1.15 : 1)
 
   const loadData = useCallback(async (uid) => {
     const { data: hl } = await supabase.from('highlights').select('*').eq('user_id', uid)
@@ -399,6 +489,11 @@ export default function HomePage() {
       setUser(user)
       const { data: prof } = await supabase.from('profiles').select('*').eq('id', user.id).maybeSingle()
       setProfile(prof)
+      setDisplayNameDraft(prof?.display_name || '')
+      if (prof?.family_id) {
+        const { data: roster } = await supabase.from('profiles').select('id, display_name').eq('family_id', prof.family_id)
+        setFamilyRoster(roster || [])
+      }
       await loadData(user.id)
       setLoading(false)
     }
@@ -433,6 +528,13 @@ export default function HomePage() {
     if (book && chapter) fetchChapter(book, chapter, bibleLang)
   }, [book, chapter, bibleLang, fetchChapter])
 
+  // Fetch today's Verse of the Day chapter text (once, cached) so the
+  // Home widget can show the actual verse, not just the reference.
+  useEffect(() => {
+    const votd = verseOfDayEntry()
+    fetchChapter(votd.book, votd.chapter, bibleLang)
+  }, [bibleLang, fetchChapter])
+
   // Auto-track the reading streak: count today as "read" the first time
   // the primary pane opens a chapter this session.
   useEffect(() => {
@@ -443,6 +545,26 @@ export default function HomePage() {
   useEffect(() => {
     if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, bibleLang)
   }, [splitOn, splitBook, splitChapter, bibleLang, fetchChapter])
+
+  // Best-effort daily reminder: if enabled and permission was granted, fire
+  // one browser notification per session after 6pm local time if today's
+  // reading hasn't been logged yet. Only works while this tab stays open.
+  useEffect(() => {
+    if (!reminderNotifyOn) return
+    if (typeof window === 'undefined' || !('Notification' in window)) return
+    if (Notification.permission !== 'granted') return
+    const check = () => {
+      const now = new Date()
+      const alreadyRead = readingLog.includes(toDateStr(now))
+      if (!alreadyRead && now.getHours() >= 18 && !reminderFiredToday) {
+        new Notification('Family Bible', { body: "You haven't read today yet — come open the Word." })
+        setReminderFiredToday(true)
+      }
+    }
+    check()
+    const interval = setInterval(check, 15 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [reminderNotifyOn, readingLog, reminderFiredToday])
 
   // Read tab always lands on the books browser first (per Mary's request);
   // reset out of a mid-read state whenever the Read tab is (re)entered.
@@ -945,6 +1067,86 @@ export default function HomePage() {
     router.push('/login')
   }
 
+  // Saves the user's display name (Settings) - used to attribute Activity
+  // Feed items by name instead of a raw id.
+  async function saveDisplayName() {
+    if (!user) return
+    setSavingDisplayName(true)
+    try {
+      const name = displayNameDraft.trim() || null
+      const { data, error } = await supabase.from('profiles').update({ display_name: name }).eq('id', user.id).select().single()
+      if (error) throw error
+      setProfile(data)
+      setFamilyRoster((r) => r.map((m) => (m.id === user.id ? { ...m, display_name: name } : m)))
+    } catch (err) {
+      alert('Could not save your name: ' + err.message)
+    } finally {
+      setSavingDisplayName(false)
+    }
+  }
+
+  // Looks up a family member's display name for the Activity Feed, falling
+  // back to "You" for the signed-in user and "A family member" otherwise.
+  function nameFor(userId) {
+    if (userId === user?.id) return 'You'
+    const m = familyRoster.find((r) => r.id === userId)
+    return (m && m.display_name) ? m.display_name : 'A family member'
+  }
+
+  // Best-effort browser notification permission for the daily reading
+  // reminder. Only fires while this tab is open on this device - there is
+  // no server-side push behind this, which is stated plainly in Settings.
+  async function enableReminderNotify() {
+    try {
+      if (!('Notification' in window)) {
+        alert("This browser doesn't support notifications.")
+        return
+      }
+      const perm = await Notification.requestPermission()
+      setReminderNotifyOn(perm === 'granted')
+      if (perm !== 'granted') alert('Notification permission was not granted.')
+    } catch (e) {
+      alert('Could not enable notifications: ' + e.message)
+    }
+  }
+
+  // Combines recent family-shared notes, shared prayers, and chapter
+  // summary edits into one reverse-chronological Activity Feed, capped to
+  // the 12 most recent items. Personal-only data (confession/communion
+  // logs, personal notes, verse themes) is intentionally excluded.
+  function buildActivityFeed() {
+    const items = []
+    notes.filter((n) => n.scope === 'family').forEach((n) => {
+      items.push({ id: `note-${n.id}`, ts: n.created_at, userId: n.user_id, kind: 'note', book: n.book, chapter: n.chapter, verse: n.verse, text: n.text })
+    })
+    prayers.filter((p) => p.is_shared).forEach((p) => {
+      items.push({ id: `prayer-${p.id}`, ts: p.created_at, userId: p.user_id, kind: 'prayer', title: p.title })
+      if (p.is_answered && p.answered_at) {
+        items.push({ id: `prayer-answered-${p.id}`, ts: p.answered_at, userId: p.user_id, kind: 'prayer_answered', title: p.title })
+      }
+    })
+    Object.values(chapterSummaries).forEach((s) => {
+      items.push({ id: `summary-${s.book}-${s.chapter}`, ts: s.updated_at, userId: s.updated_by, kind: 'summary', book: s.book, chapter: s.chapter })
+    })
+    return items
+      .filter((i) => i.ts)
+      .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+      .slice(0, 12)
+  }
+
+  // Short "3h ago" / "2d ago" style relative time for Activity Feed items.
+  function relativeTime(ts) {
+    const diffMs = new Date() - new Date(ts)
+    const mins = Math.floor(diffMs / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `${hrs}h ago`
+    const days = Math.floor(hrs / 24)
+    if (days < 7) return `${days}d ago`
+    return new Date(ts).toLocaleDateString()
+  }
+
   // Notes visible on a given verse: notes written directly on it, OR
   // notes written elsewhere that link TO it (cross-reference/prophecy).
   function notesForVerse(b, c, v) {
@@ -1285,13 +1487,45 @@ export default function HomePage() {
   const cardHeaderStyle = { fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 14px', color: themePalette.text }
   const iconBtnStyle = { cursor: 'pointer', background: 'none', border: `1px solid ${themePalette.border}`, borderRadius: 6, width: 24, height: 24, fontSize: 12, color: themePalette.textMuted, lineHeight: 1 }
 
+  // Verse of the Day - today's reference plus its cached text, if loaded.
+  const votd = verseOfDayEntry()
+  const votdCacheEntry = chapterCache[chapterCacheKey(votd.book, votd.chapter, bibleLang)]
+  const votdVerseText = votdCacheEntry && !votdCacheEntry.loading && !votdCacheEntry.error
+    ? (votdCacheEntry.verses.find((v) => v.n === votd.verse) || {}).t
+    : null
+
+  // Whether today's reading has already been logged, for the reminder banner.
+  const readToday = readingLog.includes(toDateStr(new Date()))
+
+  const activityFeed = buildActivityFeed()
+
+  const ALL_NAV_TABS = [
+    { key: 'home', label: 'Home', group: 'Today' },
+    { key: 'read', label: 'Read', group: 'Today' },
+    { key: 'search', label: 'Search', group: 'Today' },
+    { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}`, group: 'Family & Faith' },
+    { key: 'themes', label: 'Themes', group: 'Family & Faith' },
+    { key: 'characters', label: 'Characters', group: 'Family & Faith' },
+    { key: 'settings', label: 'Settings', group: 'App' },
+  ]
+  // Kid Mode trims the nav down to the essentials; Settings always stays
+  // reachable so the toggle can be turned back off.
+  const KID_MODE_TABS = ['home', 'read', 'prayers', 'settings']
+  const visibleNavTabs = kidMode ? ALL_NAV_TABS.filter((t) => KID_MODE_TABS.includes(t.key)) : ALL_NAV_TABS
+  const navGroupOrder = ['Today', 'Family & Faith', 'App']
+  const navGroups = navGroupOrder
+    .map((g) => ({ label: g, tabs: visibleNavTabs.filter((t) => t.group === g) }))
+    .filter((g) => g.tabs.length > 0)
+
   return (
     <div style={{ minHeight: '100vh', background: themePalette.bg, color: themePalette.text, fontFamily: "'Inter', system-ui, sans-serif" }}>
       <style>{FONT_IMPORT_CSS}</style>
-      <div style={{ maxWidth: splitOn ? 1000 : 640, margin: '0 auto', padding: '32px 24px 64px', zoom: fontScale }}>
+      <div style={{ maxWidth: splitOn ? 1000 : (isWide ? 880 : 640), margin: '0 auto', padding: '32px 24px 64px', zoom: fontScale }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24, paddingBottom: 16, borderBottom: `1px solid ${themePalette.border}` }}>
         <div>
-          <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: themePalette.textMuted, marginBottom: 4 }}>Family Bible</div>
+          <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: themePalette.textMuted, marginBottom: 4 }}>
+            Family Bible{kidMode ? ' · Kid Mode' : ''}
+          </div>
           <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
             {tab === 'home' ? 'Home' : tab === 'read' ? 'Reading' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
           </h1>
@@ -1299,30 +1533,83 @@ export default function HomePage() {
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
       </div>
 
-      <div style={{ display: 'flex', gap: 2, marginBottom: 28, borderBottom: `1px solid ${themePalette.border}`, overflowX: 'auto' }}>
-        {[
-          { key: 'home', label: 'Home' },
-          { key: 'read', label: 'Read' },
-          { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}` },
-          { key: 'search', label: 'Search' },
-          { key: 'themes', label: 'Themes' },
-          { key: 'characters', label: 'Characters' },
-          { key: 'settings', label: 'Settings' },
-        ].map((navTab) => (
-          <button key={navTab.key} onClick={() => setTab(navTab.key)}
-            style={{
-              cursor: 'pointer', padding: '10px 14px', background: 'none', border: 'none',
-              borderBottom: tab === navTab.key ? `2px solid ${resolvedAccent}` : '2px solid transparent',
-              fontWeight: tab === navTab.key ? 600 : 400, fontSize: 14, whiteSpace: 'nowrap',
-              color: tab === navTab.key ? themePalette.text : themePalette.textMuted,
-            }}>
-            {navTab.label}
-          </button>
-        ))}
-      </div>
+      {!isWide && (
+        <div style={{ display: 'flex', gap: 2, marginBottom: 28, borderBottom: `1px solid ${themePalette.border}`, overflowX: 'auto' }}>
+          {visibleNavTabs.map((navTab) => (
+            <button key={navTab.key} onClick={() => setTab(navTab.key)}
+              style={{
+                cursor: 'pointer', padding: '10px 14px', background: 'none', border: 'none',
+                borderBottom: tab === navTab.key ? `2px solid ${resolvedAccent}` : '2px solid transparent',
+                fontWeight: tab === navTab.key ? 600 : 400, fontSize: 14, whiteSpace: 'nowrap',
+                color: tab === navTab.key ? themePalette.text : themePalette.textMuted,
+              }}>
+              {navTab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 32, alignItems: 'flex-start' }}>
+      {isWide && (
+        <div style={{ width: 168, flexShrink: 0, position: 'sticky', top: 24 }}>
+          {navGroups.map((group) => (
+            <div key={group.label} style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8, paddingLeft: 10 }}>
+                {group.label}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {group.tabs.map((navTab) => (
+                  <button key={navTab.key} onClick={() => setTab(navTab.key)}
+                    style={{
+                      cursor: 'pointer', textAlign: 'left', padding: '8px 10px', borderRadius: 8, border: 'none',
+                      background: tab === navTab.key ? themePalette.chip : 'transparent',
+                      fontWeight: tab === navTab.key ? 600 : 400, fontSize: 14,
+                      color: tab === navTab.key ? themePalette.text : themePalette.textMuted,
+                    }}>
+                    {navTab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
 
       {tab === 'home' && (
         <div>
+          {!readToday && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+              background: themePalette.chip, border: `1px solid ${themePalette.border}`, borderRadius: 10, padding: '12px 16px', marginBottom: 20,
+            }}>
+              <span style={{ fontSize: 13 }}>📅 You haven't read today yet.</span>
+              <button onClick={() => setTab('read')}
+                style={{ cursor: 'pointer', fontSize: 13, padding: '6px 14px', borderRadius: 8, border: 'none', background: resolvedAccent, color: resolvedOnAccent }}>
+                Go read →
+              </button>
+            </div>
+          )}
+
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>✨ Verse of the Day</h3>
+            <div style={{ fontSize: 13, color: themePalette.textMuted, marginBottom: 8 }}>
+              {votd.book} {votd.chapter}:{votd.verse}
+            </div>
+            {votdVerseText ? (
+              <p style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 17, lineHeight: 1.6, margin: '0 0 14px' }}>
+                {votdVerseText}
+              </p>
+            ) : (
+              <p style={{ fontSize: 13, opacity: 0.6, margin: '0 0 14px' }}>Loading...</p>
+            )}
+            <button
+              onClick={() => { setBook(votd.book); setChapter(votd.chapter); setSelectedVerse(votd.verse); setReadStage('reading'); setTab('read') }}
+              style={{ cursor: 'pointer', fontSize: 13 }}>
+              Read in context →
+            </button>
+          </div>
+
           <div style={cardStyle}>
             <h3 style={cardHeaderStyle}>🔥 Reading Streak</h3>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
@@ -1483,6 +1770,30 @@ export default function HomePage() {
                   <div key={c.id} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${themePalette.hairline}` }}>
                     <span>{new Date(c.log_date + 'T00:00:00').toLocaleDateString()}{c.note ? ` — ${c.note}` : ''}</span>
                     <button onClick={() => deleteCommunionEntry(c.id)} style={{ cursor: 'pointer', background: 'none', border: 'none', color: themePalette.danger, fontSize: 11 }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={cardStyle}>
+            <h3 style={cardHeaderStyle}>👪 Family Activity</h3>
+            {activityFeed.length === 0 ? (
+              <p style={{ fontSize: 13, color: themePalette.textMuted, margin: 0 }}>
+                Nothing shared with the family yet. Notes and prayers marked "Family" will show up here.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {activityFeed.map((item) => (
+                  <div key={item.id} style={{ fontSize: 13, display: 'flex', justifyContent: 'space-between', gap: 8, borderBottom: `1px solid ${themePalette.hairline}`, paddingBottom: 10 }}>
+                    <span>
+                      <strong>{nameFor(item.userId)}</strong>{' '}
+                      {item.kind === 'note' && <>added a note on {item.book} {item.chapter}:{item.verse}</>}
+                      {item.kind === 'prayer' && <>shared a prayer: "{item.title}"</>}
+                      {item.kind === 'prayer_answered' && <>marked "{item.title}" as answered 🙏</>}
+                      {item.kind === 'summary' && <>updated the summary for {item.book} {item.chapter}</>}
+                    </span>
+                    <span style={{ color: themePalette.textMuted, whiteSpace: 'nowrap', fontSize: 11 }}>{relativeTime(item.ts)}</span>
                   </div>
                 ))}
               </div>
@@ -2238,6 +2549,18 @@ export default function HomePage() {
 
       {tab === 'settings' && (
         <div style={{ maxWidth: 480 }}>
+          <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Your name</h3>
+          <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 12px' }}>
+            Shown to family members in the Family Activity feed on Home.
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 32 }}>
+            <input value={displayNameDraft} onChange={(e) => setDisplayNameDraft(e.target.value)}
+              placeholder="e.g. Mary" style={{ flex: 1, padding: 8, fontSize: 14 }} />
+            <button onClick={saveDisplayName} disabled={savingDisplayName} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+              {savingDisplayName ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+
           <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Appearance</h3>
           <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 20px' }}>
             These settings are saved on this device.
@@ -2310,8 +2633,41 @@ export default function HomePage() {
               })}
             </div>
           </div>
+
+          <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '28px 0 4px', color: themePalette.text }}>Kid Mode</h3>
+          <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 12px' }}>
+            Simplifies the app for younger family members: a shorter menu (Home, Read, Prayers, Settings) and larger text.
+          </p>
+          <button onClick={() => setKidMode((k) => !k)}
+            style={{
+              cursor: 'pointer', padding: '8px 16px', borderRadius: 8,
+              border: kidMode ? `2px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+              background: kidMode ? themePalette.chip : themePalette.surface,
+              fontSize: 13, color: themePalette.text, fontWeight: kidMode ? 600 : 400, marginBottom: 32,
+            }}>
+            {kidMode ? '✓ Kid Mode is on' : 'Turn on Kid Mode'}
+          </button>
+
+          <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Daily reading reminder</h3>
+          <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 12px' }}>
+            Home always shows a banner if you haven't read yet today. You can also turn on a browser notification -
+            note this only fires while the app is open in this browser on this device; it can't reach you when the tab or browser is closed.
+          </p>
+          {reminderNotifyOn ? (
+            <button onClick={() => setReminderNotifyOn(false)}
+              style={{ cursor: 'pointer', padding: '8px 16px', borderRadius: 8, border: `2px solid ${resolvedAccent}`, background: themePalette.chip, fontSize: 13, color: themePalette.text, fontWeight: 600 }}>
+              ✓ Browser reminder is on
+            </button>
+          ) : (
+            <button onClick={enableReminderNotify}
+              style={{ cursor: 'pointer', padding: '8px 16px', borderRadius: 8, border: `1px solid ${themePalette.border}`, background: themePalette.surface, fontSize: 13, color: themePalette.text }}>
+              Turn on browser reminder
+            </button>
+          )}
         </div>
       )}
+      </div>
+      </div>
       </div>
     </div>
   )
