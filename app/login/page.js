@@ -33,6 +33,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState('signin') // signin | signup
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [familyCode, setFamilyCode] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const router = useRouter()
@@ -64,8 +65,19 @@ export default function LoginPage() {
     const supabase = createClient()
 
     if (mode === 'signup') {
-      const { error } = await supabase.auth.signUp({ email, password })
+      const { data, error } = await supabase.auth.signUp({ email, password })
       if (error) { setError(error.message); setBusy(false); return }
+      // If a family code was entered, link this new account to that family
+      // right away. Upsert (rather than update) so it works whether or not
+      // a profiles row already exists for this user at this point - if the
+      // code is wrong/mistyped this just silently doesn't link them to a
+      // real family, so it's never blocking on error.
+      if (familyCode.trim() && data?.user) {
+        const { error: fcError } = await supabase
+          .from('profiles')
+          .upsert({ id: data.user.id, family_id: familyCode.trim() }, { onConflict: 'id' })
+        if (fcError) console.error('Could not link family code:', fcError.message)
+      }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) { setError(error.message); setBusy(false); return }
@@ -108,8 +120,17 @@ export default function LoginPage() {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              style={{ ...inputStyle, marginBottom: 18 }}
+              style={{ ...inputStyle, marginBottom: mode === 'signup' ? 12 : 18 }}
             />
+            {mode === 'signup' && (
+              <input
+                type="text"
+                placeholder="Family code (optional - ask whoever invited you)"
+                value={familyCode}
+                onChange={(e) => setFamilyCode(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 18 }}
+              />
+            )}
             <button type="submit" disabled={busy}
               style={{
                 width: '100%', padding: 12, fontSize: 15, cursor: busy ? 'default' : 'pointer',
