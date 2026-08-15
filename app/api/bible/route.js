@@ -13,6 +13,15 @@
 // GET /api/bible?q=faith                          -> English search, { results }
 // GET /api/bible?list=1                           -> every Bible your api.bible account can access
 
+// GET /api/bible?booksFor=ot   -> lists every book id/name api.bible has
+//                                  for the configured Brenton Septuagint
+//                                  (BIBLE_ID_OT). Diagnostic only - used
+//                                  to figure out why Nehemiah/Daniel/
+//                                  Esther were 404ing (their USFM code
+//                                  may not match what this specific
+//                                  Bible edition uses). Safe to leave in;
+//                                  it only reads, never writes.
+
 import { NextResponse } from 'next/server'
 
 const API_BASE = 'https://rest.api.bible/v1'
@@ -54,16 +63,37 @@ const bookInfo = (usfm) => {
 // Turns api.bible's plain-text chapter content (verse numbers wrapped
 // in brackets, e.g. "[1] In the beginning...[2] And the earth...")
 // into an array of {n, t} verse objects.
+//
+// Two quirks this specifically handles:
+// 1. Some chapters' first verse arrives with NO bracket at all (a common
+//    publisher convention: the chapter-initial verse number is left
+//    unnumbered since it's implied by the chapter heading). Any text
+//    found BEFORE the first "[n]" marker is treated as verse 1, rather
+//    than being silently dropped.
+// 2. Verse spans like "[1-2]" (two verses combined under one number in
+//    the source text) are matched as a single marker rather than having
+//    their digits parsed apart, which previously produced a garbage
+//    verse entry.
 function parseVerses(content) {
-  const cleaned = content.replace(/\[|\]/g, '').replace(/\s+/g, ' ').trim()
-  const verses = []
-  const re = /(\d{1,3})([^\d]+)/g
+  const cleaned = (content || '').replace(/\s+/g, ' ').trim()
+  const re = /\[(\d{1,3})(?:-\d{1,3})?\]/g
+  const segments = []
   let match
+  let cursor = 0
+  let pendingNum = null
   while ((match = re.exec(cleaned)) !== null) {
-    const n = parseInt(match[1], 10)
-    const t = match[2].trim()
-    if (t) verses.push({ n, t })
+    const text = cleaned.slice(cursor, match.index).trim()
+    if (text) segments.push({ n: pendingNum, t: text })
+    pendingNum = parseInt(match[1], 10)
+    cursor = re.lastIndex
   }
+  const tail = cleaned.slice(cursor).trim()
+  if (tail) segments.push({ n: pendingNum, t: tail })
+  const verses = []
+  segments.forEach((seg) => {
+    if (!seg.t) return
+    verses.push({ n: seg.n === null ? 1 : seg.n, t: seg.t })
+  })
   return verses
 }
 
@@ -73,12 +103,19 @@ export async function GET(request) {
   const chapter = searchParams.get('chapter')
   const q = searchParams.get('q')
   const list = searchParams.get('list')
+  const booksFor = searchParams.get('booksFor') // 'ot' | 'nt', diagnostic
   const lang = searchParams.get('lang') || 'en'
 
   try {
     if (list) {
       if (!API_KEY) return NextResponse.json({ error: 'Set BIBLE_API_KEY in Vercel to use list.' }, { status: 500 })
       return await handleList()
+    }
+    if (booksFor) {
+      if (!API_KEY) return NextResponse.json({ error: 'Set BIBLE_API_KEY in Vercel to use booksFor.' }, { status: 500 })
+      const bibleId = booksFor === 'nt' ? BIBLE_ID_NT : BIBLE_ID_OT
+      if (!bibleId) return NextResponse.json({ error: `${booksFor === 'nt' ? 'BIBLE_ID_NT' : 'BIBLE_ID_OT'} is not set in Vercel.` }, { status: 500 })
+      return await handleBooksFor(bibleId)
     }
     if (book && chapter) {
       if (lang === 'ar') {
@@ -120,6 +157,22 @@ async function handleList() {
     language: b.language?.name,
   })).sort((a, b) => (a.language || '').localeCompare(b.language || ''))
   return NextResponse.json({ count: bibles.length, bibles })
+}
+
+// Diagnostic: lists every book id/name api.bible has for a given Bible
+// edition, so we can compare against our BOOK_ORDER USFM codes and find
+// mismatches (e.g. this edition might file Nehemiah under a different
+// code, or not carry it as a separate book at all).
+async function handleBooksFor(bibleId) {
+  const url = `${API_BASE}/bibles/${bibleId}/books`
+  const res = await fetch(url, { headers: { 'api-key': API_KEY } })
+  if (!res.ok) {
+    const detail = await res.text()
+    return NextResponse.json({ error: `api.bible returned ${res.status}`, detail }, { status: res.status })
+  }
+  const json = await res.json()
+  const books = (json.data || []).map((b) => ({ id: b.id, name: b.name, nameLong: b.nameLong }))
+  return NextResponse.json({ bibleId, count: books.length, books })
 }
 
 async function handleChapter(book, chapter) {
