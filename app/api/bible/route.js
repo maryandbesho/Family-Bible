@@ -204,21 +204,30 @@ async function handleChaptersFor(bibleId, bookId) {
 // uses everywhere else (nav, chapter counts, BOOK_ORDER, etc). This map
 // translates OUR code to THEIRS only at the moment of building the
 // api.bible request - confirmed against this edition's real book list.
-// Nehemiah isn't here yet: this edition merges it into "EZR" (Ezra and
-// Nehemiah) as one continuous book rather than giving it its own code, so
-// it needs a chapter-offset fix, not a simple rename - pending.
 const OT_BOOK_CODE_OVERRIDE = {
   EST: 'ESG', // this edition calls it "Esther (Greek)"
   DAN: 'DAG', // this edition calls it "Daniel (Greek)"
 }
 
+// This edition doesn't give Nehemiah its own book at all - it's merged
+// into "EZR" ("Ezra and Nehemiah") as one continuous 23-chapter book:
+// chapters 1-10 are Ezra, chapters 11-23 are Nehemiah's 13 chapters.
+// Confirmed directly against this edition's real chapter list.
+const NEHEMIAH_CHAPTER_OFFSET = 10
+
 async function handleChapter(book, chapter) {
   const info = bookInfo(book)
   if (!info) return NextResponse.json({ error: `Unknown book code: ${book}` }, { status: 400 })
   const bibleId = info.testament === 'OT' ? BIBLE_ID_OT : BIBLE_ID_NT
-  const apiBookCode = info.testament === 'OT' ? (OT_BOOK_CODE_OVERRIDE[book] || book) : book
 
-  const chapterId = `${apiBookCode}.${chapter}`
+  let apiBookCode = info.testament === 'OT' ? (OT_BOOK_CODE_OVERRIDE[book] || book) : book
+  let apiChapter = chapter
+  if (book === 'NEH') {
+    apiBookCode = 'EZR'
+    apiChapter = String(Number(chapter) + NEHEMIAH_CHAPTER_OFFSET)
+  }
+
+  const chapterId = `${apiBookCode}.${apiChapter}`
   const url = `${API_BASE}/bibles/${bibleId}/chapters/${chapterId}` +
     `?content-type=text&include-verse-numbers=true&include-chapter-numbers=false` +
     `&include-notes=false&include-titles=false&include-verse-spans=false`
@@ -232,7 +241,10 @@ async function handleChapter(book, chapter) {
   const verses = parseVerses(json.data.content || '')
   return NextResponse.json({
     verses,
-    reference: json.data.reference,
+    // For Nehemiah, api.bible's own reference string would say "Ezra and
+    // Nehemiah 11" (its internal combined-book numbering) - override it
+    // with the reference the person actually asked for.
+    reference: book === 'NEH' ? `Nehemiah ${chapter}` : json.data.reference,
     copyright: json.data.copyright || null,
     dir: 'ltr',
   })
