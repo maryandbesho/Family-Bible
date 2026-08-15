@@ -67,16 +67,19 @@ export default function LoginPage() {
     if (mode === 'signup') {
       const { data, error } = await supabase.auth.signUp({ email, password })
       if (error) { setError(error.message); setBusy(false); return }
-      // If a family code was entered, link this new account to that family
-      // right away. Upsert (rather than update) so it works whether or not
-      // a profiles row already exists for this user at this point - if the
-      // code is wrong/mistyped this just silently doesn't link them to a
-      // real family, so it's never blocking on error.
-      if (familyCode.trim() && data?.user) {
+      // Always create a profiles row for the new account, whether or not a
+      // family code was entered. Without this, someone who signs up with no
+      // code (e.g. the very first family member, who has no one's code to
+      // enter) never gets a profiles row - and later actions like naming
+      // themselves or creating a family code use an update-by-id, which
+      // silently fails with "Cannot coerce the result to a single JSON
+      // object" against a row that doesn't exist yet.
+      if (data?.user) {
+        const trimmedCode = familyCode.trim()
         const { error: fcError } = await supabase
           .from('profiles')
-          .upsert({ id: data.user.id, family_id: familyCode.trim() }, { onConflict: 'id' })
-        if (fcError) console.error('Could not link family code:', fcError.message)
+          .upsert({ id: data.user.id, ...(trimmedCode ? { family_id: trimmedCode } : {}) }, { onConflict: 'id' })
+        if (fcError) console.error('Could not create profile row:', fcError.message)
       }
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
