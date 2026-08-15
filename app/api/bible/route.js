@@ -15,12 +15,13 @@
 
 // GET /api/bible?booksFor=ot   -> lists every book id/name api.bible has
 //                                  for the configured Brenton Septuagint
-//                                  (BIBLE_ID_OT). Diagnostic only - used
-//                                  to figure out why Nehemiah/Daniel/
-//                                  Esther were 404ing (their USFM code
-//                                  may not match what this specific
-//                                  Bible edition uses). Safe to leave in;
-//                                  it only reads, never writes.
+//                                  (BIBLE_ID_OT). Diagnostic only.
+// GET /api/bible?chaptersFor=ot&book=EZR -> lists every chapter id inside
+//                                  one book of a given edition. Diagnostic
+//                                  only - used to find where Ezra ends and
+//                                  Nehemiah begins inside the combined
+//                                  "Ezra and Nehemiah" book in this
+//                                  edition. Safe to leave in; read-only.
 
 import { NextResponse } from 'next/server'
 
@@ -104,6 +105,7 @@ export async function GET(request) {
   const q = searchParams.get('q')
   const list = searchParams.get('list')
   const booksFor = searchParams.get('booksFor') // 'ot' | 'nt', diagnostic
+  const chaptersFor = searchParams.get('chaptersFor') // 'ot' | 'nt', diagnostic (uses &book=)
   const lang = searchParams.get('lang') || 'en'
 
   try {
@@ -116,6 +118,13 @@ export async function GET(request) {
       const bibleId = booksFor === 'nt' ? BIBLE_ID_NT : BIBLE_ID_OT
       if (!bibleId) return NextResponse.json({ error: `${booksFor === 'nt' ? 'BIBLE_ID_NT' : 'BIBLE_ID_OT'} is not set in Vercel.` }, { status: 500 })
       return await handleBooksFor(bibleId)
+    }
+    if (chaptersFor) {
+      if (!API_KEY) return NextResponse.json({ error: 'Set BIBLE_API_KEY in Vercel to use chaptersFor.' }, { status: 500 })
+      if (!book) return NextResponse.json({ error: 'Add &book=XXX (e.g. &book=EZR) to use chaptersFor.' }, { status: 400 })
+      const bibleId = chaptersFor === 'nt' ? BIBLE_ID_NT : BIBLE_ID_OT
+      if (!bibleId) return NextResponse.json({ error: `${chaptersFor === 'nt' ? 'BIBLE_ID_NT' : 'BIBLE_ID_OT'} is not set in Vercel.` }, { status: 500 })
+      return await handleChaptersFor(bibleId, book)
     }
     if (book && chapter) {
       if (lang === 'ar') {
@@ -175,12 +184,41 @@ async function handleBooksFor(bibleId) {
   return NextResponse.json({ bibleId, count: books.length, books })
 }
 
+// Diagnostic: lists every chapter id inside one book of a given edition -
+// used to find where Ezra ends and Nehemiah begins inside the combined
+// "Ezra and Nehemiah" book (EZR) in the Brenton Septuagint.
+async function handleChaptersFor(bibleId, bookId) {
+  const url = `${API_BASE}/bibles/${bibleId}/books/${bookId}/chapters`
+  const res = await fetch(url, { headers: { 'api-key': API_KEY } })
+  if (!res.ok) {
+    const detail = await res.text()
+    return NextResponse.json({ error: `api.bible returned ${res.status}`, detail }, { status: res.status })
+  }
+  const json = await res.json()
+  const chapters = (json.data || []).map((c) => ({ id: c.id, number: c.number, reference: c.reference }))
+  return NextResponse.json({ bibleId, bookId, count: chapters.length, chapters })
+}
+
+// This specific Brenton Septuagint edition (BIBLE_ID_OT) files a few Old
+// Testament books under different codes than the standard ones this app
+// uses everywhere else (nav, chapter counts, BOOK_ORDER, etc). This map
+// translates OUR code to THEIRS only at the moment of building the
+// api.bible request - confirmed against this edition's real book list.
+// Nehemiah isn't here yet: this edition merges it into "EZR" (Ezra and
+// Nehemiah) as one continuous book rather than giving it its own code, so
+// it needs a chapter-offset fix, not a simple rename - pending.
+const OT_BOOK_CODE_OVERRIDE = {
+  EST: 'ESG', // this edition calls it "Esther (Greek)"
+  DAN: 'DAG', // this edition calls it "Daniel (Greek)"
+}
+
 async function handleChapter(book, chapter) {
   const info = bookInfo(book)
   if (!info) return NextResponse.json({ error: `Unknown book code: ${book}` }, { status: 400 })
   const bibleId = info.testament === 'OT' ? BIBLE_ID_OT : BIBLE_ID_NT
+  const apiBookCode = info.testament === 'OT' ? (OT_BOOK_CODE_OVERRIDE[book] || book) : book
 
-  const chapterId = `${book}.${chapter}`
+  const chapterId = `${apiBookCode}.${chapter}`
   const url = `${API_BASE}/bibles/${bibleId}/chapters/${chapterId}` +
     `?content-type=text&include-verse-numbers=true&include-chapter-numbers=false` +
     `&include-notes=false&include-titles=false&include-verse-spans=false`
