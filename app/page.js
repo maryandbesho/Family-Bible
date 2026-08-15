@@ -397,6 +397,13 @@ export default function HomePage() {
   const [savingDisplayName, setSavingDisplayName] = useState(false)
   const [familyRoster, setFamilyRoster] = useState([]) // [{id, display_name}]
 
+  // Family invite code (Settings) - lets new sign-ups link themselves to
+  // this family automatically instead of Mary editing profiles by hand in
+  // Supabase. The code IS the family_id itself (a UUID), generated once by
+  // whoever starts the family and shared out-of-band (text, etc).
+  const [generatingFamilyCode, setGeneratingFamilyCode] = useState(false)
+  const [familyCodeCopied, setFamilyCodeCopied] = useState(false)
+
   // Data export/import (Settings) - a personal JSON backup covering the
   // categories listed in buildExportPayload() below. Import is additive
   // only: it never updates or deletes existing rows.
@@ -1214,6 +1221,35 @@ export default function HomePage() {
     if (userId === user?.id) return 'You'
     const m = familyRoster.find((r) => r.id === userId)
     return (m && m.display_name) ? m.display_name : 'A family member'
+  }
+
+  // Generates this account's family invite code (a fresh UUID stored as
+  // this profile's family_id) so a code exists to share with new sign-ups.
+  // If a family_id already exists, this is a no-op guard - it never
+  // regenerates over an existing code, which would orphan anyone who
+  // already joined with the old one.
+  async function generateFamilyCode() {
+    if (!user || profile?.family_id) return
+    setGeneratingFamilyCode(true)
+    try {
+      const code = crypto.randomUUID()
+      const { data, error } = await supabase.from('profiles').update({ family_id: code }).eq('id', user.id).select().single()
+      if (error) throw error
+      setProfile(data)
+      setFamilyRoster((r) => (r.some((m) => m.id === user.id) ? r : [...r, { id: user.id, display_name: data.display_name }]))
+    } catch (err) {
+      alert('Could not create a family code: ' + err.message)
+    } finally {
+      setGeneratingFamilyCode(false)
+    }
+  }
+
+  function copyFamilyCode() {
+    if (!profile?.family_id) return
+    navigator.clipboard.writeText(profile.family_id).then(() => {
+      setFamilyCodeCopied(true)
+      setTimeout(() => setFamilyCodeCopied(false), 2000)
+    }).catch(() => alert('Could not copy - you can select and copy the code manually.'))
   }
 
   // Best-effort browser notification permission for the daily reading
@@ -3005,6 +3041,26 @@ export default function HomePage() {
               {savingDisplayName ? 'Saving...' : 'Save'}
             </button>
           </div>
+
+          <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Family invite code</h3>
+          <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 12px' }}>
+            Share this code with family members. When they enter it on the sign-up screen, they're linked to your family automatically - no Supabase editing needed.
+          </p>
+          {profile?.family_id ? (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 32, flexWrap: 'wrap' }}>
+              <input readOnly value={profile.family_id} onClick={(e) => e.target.select()}
+                style={{ flex: 1, minWidth: 200, padding: 8, fontSize: 13, fontFamily: 'monospace', background: themePalette.surfaceAlt, color: themePalette.text, border: `1px solid ${themePalette.border}`, borderRadius: 6 }} />
+              <button onClick={copyFamilyCode} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+                {familyCodeCopied ? '✓ Copied' : 'Copy'}
+              </button>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 32 }}>
+              <button onClick={generateFamilyCode} disabled={generatingFamilyCode} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+                {generatingFamilyCode ? 'Creating...' : 'Create a family code'}
+              </button>
+            </div>
+          )}
 
           <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, margin: '0 0 4px', color: themePalette.text }}>Appearance</h3>
           <p style={{ fontSize: 13, color: themePalette.textMuted, margin: '0 0 20px' }}>
