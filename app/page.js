@@ -1207,7 +1207,7 @@ export default function HomePage() {
     setSavingDisplayName(true)
     try {
       const name = displayNameDraft.trim() || null
-      const { data, error } = await supabase.from('profiles').update({ display_name: name }).eq('id', user.id).select().single()
+      const { data, error } = await supabase.from('profiles').upsert({ id: user.id, display_name: name }, { onConflict: 'id' }).select().single()
       if (error) throw error
       setProfile(data)
       setFamilyRoster((r) => r.map((m) => (m.id === user.id ? { ...m, display_name: name } : m)))
@@ -1236,7 +1236,7 @@ export default function HomePage() {
     setGeneratingFamilyCode(true)
     try {
       const code = crypto.randomUUID()
-      const { data, error } = await supabase.from('profiles').update({ family_id: code }).eq('id', user.id).select().single()
+      const { data, error } = await supabase.from('profiles').upsert({ id: user.id, family_id: code }, { onConflict: 'id' }).select().single()
       if (error) throw error
       setProfile(data)
       setFamilyRoster((r) => (r.some((m) => m.id === user.id) ? r : [...r, { id: user.id, display_name: data.display_name }]))
@@ -1264,7 +1264,7 @@ export default function HomePage() {
     if (!trimmed) return
     setJoiningFamily(true)
     try {
-      const { data, error } = await supabase.from('profiles').update({ family_id: trimmed }).eq('id', user.id).select().single()
+      const { data, error } = await supabase.from('profiles').upsert({ id: user.id, family_id: trimmed }, { onConflict: 'id' }).select().single()
       if (error) throw error
       setProfile(data)
       setJoinCodeDraft('')
@@ -1287,7 +1287,7 @@ export default function HomePage() {
     if (!confirm("Leave this family? You'll stop seeing their shared notes, prayers, and activity, and they'll stop seeing yours going forward. Your own personal data isn't affected.")) return
     setLeavingFamily(true)
     try {
-      const { data, error } = await supabase.from('profiles').update({ family_id: null }).eq('id', user.id).select().single()
+      const { data, error } = await supabase.from('profiles').upsert({ id: user.id, family_id: null }, { onConflict: 'id' }).select().single()
       if (error) throw error
       setProfile(data)
       setFamilyRoster([])
