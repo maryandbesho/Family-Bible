@@ -2332,22 +2332,22 @@ export default function HomePage() {
       {tab === 'read' && (<>
 
       {readStage === 'books' && (() => {
-        const bookButton = (b) => {
+        const bookRow = (b) => {
           const isBookmarked = bookmark && bookmark.book === b
           return (
             <button key={b} onClick={() => { setBrowserSelectedBook(b); setReadStage('chapters') }}
               style={{
-                cursor: 'pointer', fontSize: 12, padding: '8px 6px', borderRadius: 6, textAlign: 'left',
+                cursor: 'pointer', fontSize: 13, padding: '8px 10px', borderRadius: 6, textAlign: 'left',
                 border: `1px solid ${isBookmarked ? resolvedAccent : themePalette.border}`,
                 background: isBookmarked ? themePalette.chip : themePalette.surface,
-                color: themePalette.text,
+                color: themePalette.text, display: 'block', width: '100%', boxSizing: 'border-box',
               }}>
               {isBookmarked ? '🔖 ' : ''}{b}
             </button>
           )
         }
         const columnHeaderStyle = { fontSize: 12, fontWeight: 700, marginBottom: 10, opacity: 0.6, letterSpacing: 0.5, textTransform: 'uppercase', fontFamily: "'Inter', system-ui, sans-serif" }
-        const categoryLabelStyle = { fontSize: 12, fontWeight: 600, marginBottom: 6, opacity: 0.55 }
+        const categoryLabelStyle = { fontSize: 12, fontWeight: 600, marginBottom: 6, marginTop: 14, opacity: 0.55 }
         return (
         <div>
           {bookmark && (
@@ -2362,21 +2362,21 @@ export default function HomePage() {
           )}
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Choose a book</div>
           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            <div style={{ flex: '1 1 280px', minWidth: 240 }}>
+            <div style={{ flex: '1 1 260px', minWidth: 220 }}>
               <div style={columnHeaderStyle}>Old Testament</div>
-              {OT_CATEGORIES.map((cat) => (
-                <div key={cat.name} style={{ marginBottom: 18 }}>
-                  <div style={categoryLabelStyle}>{cat.name}</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 8 }}>
-                    {cat.books.map(bookButton)}
+              {OT_CATEGORIES.map((cat, i) => (
+                <div key={cat.name}>
+                  <div style={{ ...categoryLabelStyle, marginTop: i === 0 ? 0 : 14 }}>{cat.name}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {cat.books.map(bookRow)}
                   </div>
                 </div>
               ))}
             </div>
-            <div style={{ flex: '1 1 280px', minWidth: 240 }}>
+            <div style={{ flex: '1 1 260px', minWidth: 220 }}>
               <div style={columnHeaderStyle}>New Testament</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 8 }}>
-                {NT_BOOKS.map(bookButton)}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {NT_BOOKS.map(bookRow)}
               </div>
             </div>
           </div>
