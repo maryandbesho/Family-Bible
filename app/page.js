@@ -246,6 +246,13 @@ export default function HomePage() {
   const [splitBook, setSplitBook] = useState('Genesis')
   const [splitChapter, setSplitChapter] = useState(1)
   const [splitScope, setSplitScope] = useState('personal')
+  // Right pane's own language - independent of the main pane's bibleLang,
+  // so English + Arabic (or any combo) can be shown side by side.
+  const [splitLang, setSplitLang] = useState('ar')
+  // When true, the right pane always follows the main pane's book/chapter/
+  // scope (see the sync effect below) - this is what powers the one-click
+  // "side by side" button so both panes always show the same passage.
+  const [mirrorPassage, setMirrorPassage] = useState(false)
   const [splitSelectedVerse, setSplitSelectedVerse] = useState(null)
   const [splitDraftText, setSplitDraftText] = useState('')
   const [splitDraftImageFile, setSplitDraftImageFile] = useState(null)
@@ -597,8 +604,31 @@ export default function HomePage() {
   }, [user, book, chapter])
 
   useEffect(() => {
-    if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, bibleLang)
-  }, [splitOn, splitBook, splitChapter, bibleLang, fetchChapter])
+    if (splitOn && splitBook && splitChapter) fetchChapter(splitBook, splitChapter, splitLang)
+  }, [splitOn, splitBook, splitChapter, splitLang, fetchChapter])
+
+  // While mirrorPassage is on, keep the right pane locked to whatever
+  // book/chapter/scope the left pane is showing, so "side by side" stays
+  // in sync as you navigate instead of needing to be re-triggered.
+  useEffect(() => {
+    if (mirrorPassage) {
+      setSplitBook(book)
+      setSplitChapter(chapter)
+      setSplitScope(scope)
+    }
+  }, [book, chapter, scope, mirrorPassage])
+
+  // Turns on split view with the right pane mirroring the left pane's
+  // current passage in the opposite language - the one-click way to read
+  // English and Arabic side by side.
+  function showParallelLanguages() {
+    setSplitOn(true)
+    setMirrorPassage(true)
+    setSplitLang(bibleLang === 'ar' ? 'en' : 'ar')
+    setSplitBook(book)
+    setSplitChapter(chapter)
+    setSplitScope(scope)
+  }
 
   // Best-effort daily reminder: if enabled and permission was granted, fire
   // one browser notification per session after 6pm local time if today's
@@ -1564,7 +1594,7 @@ export default function HomePage() {
   // replies, bookmark) for a given pane's book/chapter/state. Used for both
   // the main pane and the split-view right pane so they share all features.
   function renderReadingPane(p) {
-    const entry = chapterCache[chapterCacheKey(p.book, p.chapter, bibleLang)]
+    const entry = chapterCache[chapterCacheKey(p.book, p.chapter, p.lang || bibleLang)]
     if (!entry || entry.loading) {
       return <p style={{ fontSize: 13, opacity: 0.6 }}>Loading {p.book} {p.chapter}...</p>
     }
@@ -1871,7 +1901,7 @@ export default function HomePage() {
   }
 
   const rightPane = {
-    book: splitBook, chapter: splitChapter, scope: splitScope,
+    book: splitBook, chapter: splitChapter, scope: splitScope, lang: splitLang,
     selectedVerse: splitSelectedVerse, setSelectedVerse: setSplitSelectedVerse,
     draftText: splitDraftText, setDraftText: setSplitDraftText,
     draftImageFile: splitDraftImageFile, setDraftImageFile: setSplitDraftImageFile,
@@ -2306,7 +2336,11 @@ export default function HomePage() {
             العربية
           </button>
         </div>
-        <button onClick={() => setSplitOn((s) => !s)}
+        <button onClick={showParallelLanguages}
+          style={{ fontSize: 12, cursor: 'pointer' }}>
+          🌐 English + Arabic
+        </button>
+        <button onClick={() => { setSplitOn((s) => !s); if (splitOn) setMirrorPassage(false) }}
           style={{ marginLeft: 'auto', fontSize: 12, cursor: 'pointer' }}>
           {splitOn ? '✕ Exit split view' : '⬛ Split view'}
         </button>
@@ -2363,17 +2397,40 @@ export default function HomePage() {
 
       {splitOn && (
         <div style={{ flex: '1 1 300px', minWidth: 280, borderLeft: `1px solid ${themePalette.hairline}`, paddingLeft: 20 }}>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-            <select value={splitBook} onChange={(e) => { setSplitBook(e.target.value); setSplitChapter(chaptersFor(e.target.value)[0]); setSplitSelectedVerse(null) }}>
-              {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
-            </select>
-            <select value={splitChapter} onChange={(e) => { setSplitChapter(Number(e.target.value)); setSplitSelectedVerse(null) }}>
-              {chaptersFor(splitBook).map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <select value={splitScope} onChange={(e) => setSplitScope(e.target.value)}>
-              <option value="personal">Personal</option>
-              <option value="family">Family</option>
-            </select>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            {mirrorPassage ? (
+              <>
+                <span style={{ fontSize: 12, opacity: 0.6 }}>Same passage as left</span>
+                <button onClick={() => setMirrorPassage(false)} style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline' }}>
+                  Browse independently
+                </button>
+              </>
+            ) : (
+              <>
+                <select value={splitBook} onChange={(e) => { setSplitBook(e.target.value); setSplitChapter(chaptersFor(e.target.value)[0]); setSplitSelectedVerse(null) }}>
+                  {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+                <select value={splitChapter} onChange={(e) => { setSplitChapter(Number(e.target.value)); setSplitSelectedVerse(null) }}>
+                  {chaptersFor(splitBook).map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={splitScope} onChange={(e) => setSplitScope(e.target.value)}>
+                  <option value="personal">Personal</option>
+                  <option value="family">Family</option>
+                </select>
+              </>
+            )}
+            <div style={{ display: 'flex', border: `1px solid ${themePalette.border}`, borderRadius: 6, overflow: 'hidden', marginLeft: mirrorPassage ? 'auto' : 0 }}>
+              <button onClick={() => setSplitLang('en')}
+                style={{ padding: '5px 12px', fontSize: 12, cursor: 'pointer', border: 'none',
+                  background: splitLang === 'en' ? resolvedAccent : themePalette.surface, color: splitLang === 'en' ? resolvedOnAccent : themePalette.textMuted }}>
+                English
+              </button>
+              <button onClick={() => setSplitLang('ar')}
+                style={{ padding: '5px 12px', fontSize: 12, cursor: 'pointer', border: 'none',
+                  background: splitLang === 'ar' ? resolvedAccent : themePalette.surface, color: splitLang === 'ar' ? resolvedOnAccent : themePalette.textMuted }}>
+                العربية
+              </button>
+            </div>
           </div>
 
           {renderReadingPane(rightPane)}
