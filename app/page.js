@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { CHARACTERS, ERAS, getCharacter, getChildren, getParents, getSpouses, layoutTree } from '@/lib/characters'
@@ -1593,6 +1593,143 @@ export default function HomePage() {
   // Renders a fully-interactive verse list (highlight, notes, cross-ref links,
   // replies, bookmark) for a given pane's book/chapter/state. Used for both
   // the main pane and the split-view right pane so they share all features.
+  // The highlight/theme/notes/reply/save-note toolbar shown under a selected
+  // verse. Extracted out of renderReadingPane so the verse-aligned parallel
+  // (English + Arabic side by side) view can show the exact same toolbar
+  // under whichever language's verse was clicked.
+  function renderVerseToolbar(p, book, chapter, vn, text, notesHere) {
+    return (
+      <div style={{ marginTop: 8, background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
+          {Object.entries(HIGHLIGHTS).map(([name, color]) => (
+            <button key={name} onClick={() => toggleHighlight(name, book, chapter, vn)}
+              style={{ width: 18, height: 18, borderRadius: '50%', background: color, border: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }} />
+          ))}
+          <button onClick={() => setBookmarkHere(book, chapter, vn)} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
+          <button onClick={() => p.setThemeMenuOpen(!p.themeMenuOpen)} style={{ fontSize: 12, cursor: 'pointer' }}>
+            🏷 Theme{themesForVerse(book, chapter, vn).length > 0 ? ` (${themesForVerse(book, chapter, vn).length})` : ''}
+          </button>
+          <button onClick={() => startMeditation(book, chapter, vn, text)} style={{ fontSize: 12, cursor: 'pointer' }}>
+            🧘 Meditate
+          </button>
+          <button onClick={() => addMemoryVerse(book, chapter, vn)} style={{ fontSize: 12, cursor: 'pointer' }}>
+            📇 Memorize
+          </button>
+        </div>
+
+        {p.themeMenuOpen && (
+        <div style={{ marginBottom: 10 }}>
+          {themesForVerse(book, chapter, vn).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+              {themesForVerse(book, chapter, vn).map((t) => (
+                <span key={t.id} style={{ fontSize: 11, background: themePalette.chip, borderRadius: 12, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  📁 {t.theme}
+                  <button onClick={() => removeVerseTheme(t.id)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1, opacity: 0.6 }}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          {allThemeNames.filter((name) => !themesForVerse(book, chapter, vn).some((t) => t.theme === name)).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+              {allThemeNames.filter((name) => !themesForVerse(book, chapter, vn).some((t) => t.theme === name)).map((name) => (
+                <button key={name} onClick={() => addVerseTheme(book, chapter, vn, name)}
+                  style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: `1px solid ${themePalette.hairline}`, borderRadius: 12, padding: '2px 8px' }}>
+                  + {name}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input value={p.themeDraft} onChange={(e) => p.setThemeDraft(e.target.value)}
+              placeholder="New theme name..." autoFocus style={{ flex: 1, fontSize: 12, padding: 4 }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && p.themeDraft.trim()) { addVerseTheme(book, chapter, vn, p.themeDraft.trim()); p.setThemeDraft('') } }} />
+            <button onClick={() => { if (p.themeDraft.trim()) { addVerseTheme(book, chapter, vn, p.themeDraft.trim()); p.setThemeDraft('') } }}
+              style={{ fontSize: 12, cursor: 'pointer' }}>Add</button>
+          </div>
+        </div>
+        )}
+
+        {notesHere.map((n) => {
+          const isLinkedIn = !(n.book === book && n.chapter === chapter && n.verse === vn)
+          const otherRef = isLinkedIn
+            ? { book: n.book, chapter: n.chapter, verse: n.verse }
+            : (n.link_book ? { book: n.link_book, chapter: n.link_chapter, verse: n.link_verse } : null)
+          return (
+            <div key={n.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}` }}>
+              <div style={{ opacity: 0.6, fontSize: 11, display: 'flex', justifyContent: 'space-between' }}>
+                <span>{new Date(n.created_at).toLocaleString()} · {n.scope}</span>
+                {n.user_id === user.id && (
+                  <button onClick={() => deleteNote(n.id)} style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>Delete</button>
+                )}
+              </div>
+              <div>{n.text}</div>
+              {n.image_url && (
+                <img src={n.image_url} alt="" style={{ maxWidth: '100%', borderRadius: 6, marginTop: 6 }} />
+              )}
+              {otherRef && (
+                <div style={{ marginTop: 4, fontSize: 11, opacity: 0.7 }}>
+                  {isLinkedIn ? 'Linked from ' : (n.link_type === 'prophecy' ? 'Fulfilled in ' : 'Cross-ref to ')}
+                  {otherRef.book} {otherRef.chapter}:{otherRef.verse}
+                </div>
+              )}
+
+              {(replies[n.id] || []).map((r) => (
+                <div key={r.id} style={{ marginTop: 6, marginLeft: 12, borderLeft: `2px solid ${themePalette.hairline}`, paddingLeft: 8, fontSize: 12 }}>
+                  <div style={{ opacity: 0.55, fontSize: 10 }}>{new Date(r.created_at).toLocaleString()} · {r.scope}</div>
+                  {r.text}
+                </div>
+              ))}
+              {p.replyDraftFor === n.id ? (
+                <div style={{ marginTop: 6, marginLeft: 12, display: 'flex', gap: 6 }}>
+                  <input value={p.replyText} onChange={(e) => p.setReplyText(e.target.value)}
+                    style={{ flex: 1, fontSize: 12, padding: 4 }} placeholder="Reply..." autoFocus />
+                  <button onClick={() => addReply(n.id, p)} style={{ fontSize: 12, cursor: 'pointer' }}>Send</button>
+                </div>
+              ) : (
+                <button onClick={() => { p.setReplyDraftFor(n.id); p.setReplyText('') }}
+                  style={{ marginTop: 6, marginLeft: 12, fontSize: 11, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer' }}>
+                  Reply
+                </button>
+              )}
+            </div>
+          )
+        })}
+
+        <textarea value={p.draftText} onChange={(e) => p.setDraftText(e.target.value)} placeholder={`Add a ${p.scope} note...`}
+          style={{ width: '100%', minHeight: 50, boxSizing: 'border-box', marginBottom: 6 }} />
+
+        <div style={{ marginBottom: 6 }}>
+          <label style={{ fontSize: 12, cursor: 'pointer' }}>
+            Attach a photo
+            <input type="file" accept="image/*" style={{ display: 'block', marginTop: 4 }}
+              onChange={(e) => p.setDraftImageFile(e.target.files?.[0] || null)} />
+          </label>
+        </div>
+
+        <label style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+          <input type="checkbox" checked={p.draftLinkOn} onChange={(e) => p.setDraftLinkOn(e.target.checked)} /> Link this note to another verse
+        </label>
+        {p.draftLinkOn && (
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+            <select value={p.draftLink.book} onChange={(e) => p.setDraftLink((d) => ({ ...d, book: e.target.value, chapter: chaptersFor(e.target.value)[0] }))}>
+              {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+            <select value={p.draftLink.chapter} onChange={(e) => p.setDraftLink((d) => ({ ...d, chapter: Number(e.target.value) }))}>
+              {chaptersFor(p.draftLink.book).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input type="number" min={1} value={p.draftLink.verse} onChange={(e) => p.setDraftLink((d) => ({ ...d, verse: e.target.value }))} style={{ width: 50 }} />
+            <select value={p.draftLink.type} onChange={(e) => p.setDraftLink((d) => ({ ...d, type: e.target.value }))}>
+              <option value="cross-ref">Cross-reference</option>
+              <option value="prophecy">Prophecy - fulfilled here</option>
+            </select>
+          </div>
+        )}
+
+        <button onClick={() => addNote(p, vn)} disabled={p.saving} style={{ cursor: 'pointer' }}>{p.saving ? 'Saving...' : 'Save note'}</button>
+      </div>
+    )
+  }
+
   function renderReadingPane(p) {
     const entry = chapterCache[chapterCacheKey(p.book, p.chapter, p.lang || bibleLang)]
     if (!entry || entry.loading) {
@@ -1623,136 +1760,7 @@ export default function HomePage() {
           </span>
           {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
 
-          {isSelected && (
-            <div style={{ marginTop: 8, background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13 }}>
-              <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-                {Object.entries(HIGHLIGHTS).map(([name, color]) => (
-                  <button key={name} onClick={() => toggleHighlight(name, p.book, p.chapter, v.n)}
-                    style={{ width: 18, height: 18, borderRadius: '50%', background: color, border: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }} />
-                ))}
-                <button onClick={() => setBookmarkHere(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>Bookmark this verse</button>
-                <button onClick={() => p.setThemeMenuOpen(!p.themeMenuOpen)} style={{ fontSize: 12, cursor: 'pointer' }}>
-                  🏷 Theme{themesForVerse(p.book, p.chapter, v.n).length > 0 ? ` (${themesForVerse(p.book, p.chapter, v.n).length})` : ''}
-                </button>
-                <button onClick={() => startMeditation(p.book, p.chapter, v.n, v.t)} style={{ fontSize: 12, cursor: 'pointer' }}>
-                  🧘 Meditate
-                </button>
-                <button onClick={() => addMemoryVerse(p.book, p.chapter, v.n)} style={{ fontSize: 12, cursor: 'pointer' }}>
-                  📇 Memorize
-                </button>
-              </div>
-
-              {p.themeMenuOpen && (
-              <div style={{ marginBottom: 10 }}>
-                {themesForVerse(p.book, p.chapter, v.n).length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-                    {themesForVerse(p.book, p.chapter, v.n).map((t) => (
-                      <span key={t.id} style={{ fontSize: 11, background: themePalette.chip, borderRadius: 12, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        📁 {t.theme}
-                        <button onClick={() => removeVerseTheme(t.id)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1, opacity: 0.6 }}>✕</button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {allThemeNames.filter((name) => !themesForVerse(p.book, p.chapter, v.n).some((t) => t.theme === name)).length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-                    {allThemeNames.filter((name) => !themesForVerse(p.book, p.chapter, v.n).some((t) => t.theme === name)).map((name) => (
-                      <button key={name} onClick={() => addVerseTheme(p.book, p.chapter, v.n, name)}
-                        style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: `1px solid ${themePalette.hairline}`, borderRadius: 12, padding: '2px 8px' }}>
-                        + {name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input value={p.themeDraft} onChange={(e) => p.setThemeDraft(e.target.value)}
-                    placeholder="New theme name..." autoFocus style={{ flex: 1, fontSize: 12, padding: 4 }}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && p.themeDraft.trim()) { addVerseTheme(p.book, p.chapter, v.n, p.themeDraft.trim()); p.setThemeDraft('') } }} />
-                  <button onClick={() => { if (p.themeDraft.trim()) { addVerseTheme(p.book, p.chapter, v.n, p.themeDraft.trim()); p.setThemeDraft('') } }}
-                    style={{ fontSize: 12, cursor: 'pointer' }}>Add</button>
-                </div>
-              </div>
-              )}
-
-              {notesHere.map((n) => {
-                const isLinkedIn = !(n.book === p.book && n.chapter === p.chapter && n.verse === v.n)
-                const otherRef = isLinkedIn
-                  ? { book: n.book, chapter: n.chapter, verse: n.verse }
-                  : (n.link_book ? { book: n.link_book, chapter: n.link_chapter, verse: n.link_verse } : null)
-                return (
-                  <div key={n.id} style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}` }}>
-                    <div style={{ opacity: 0.6, fontSize: 11, display: 'flex', justifyContent: 'space-between' }}>
-                      <span>{new Date(n.created_at).toLocaleString()} · {n.scope}</span>
-                      {n.user_id === user.id && (
-                        <button onClick={() => deleteNote(n.id)} style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>Delete</button>
-                      )}
-                    </div>
-                    <div>{n.text}</div>
-                    {n.image_url && (
-                      <img src={n.image_url} alt="" style={{ maxWidth: '100%', borderRadius: 6, marginTop: 6 }} />
-                    )}
-                    {otherRef && (
-                      <div style={{ marginTop: 4, fontSize: 11, opacity: 0.7 }}>
-                        {isLinkedIn ? 'Linked from ' : (n.link_type === 'prophecy' ? 'Fulfilled in ' : 'Cross-ref to ')}
-                        {otherRef.book} {otherRef.chapter}:{otherRef.verse}
-                      </div>
-                    )}
-
-                    {(replies[n.id] || []).map((r) => (
-                      <div key={r.id} style={{ marginTop: 6, marginLeft: 12, borderLeft: `2px solid ${themePalette.hairline}`, paddingLeft: 8, fontSize: 12 }}>
-                        <div style={{ opacity: 0.55, fontSize: 10 }}>{new Date(r.created_at).toLocaleString()} · {r.scope}</div>
-                        {r.text}
-                      </div>
-                    ))}
-                    {p.replyDraftFor === n.id ? (
-                      <div style={{ marginTop: 6, marginLeft: 12, display: 'flex', gap: 6 }}>
-                        <input value={p.replyText} onChange={(e) => p.setReplyText(e.target.value)}
-                          style={{ flex: 1, fontSize: 12, padding: 4 }} placeholder="Reply..." autoFocus />
-                        <button onClick={() => addReply(n.id, p)} style={{ fontSize: 12, cursor: 'pointer' }}>Send</button>
-                      </div>
-                    ) : (
-                      <button onClick={() => { p.setReplyDraftFor(n.id); p.setReplyText('') }}
-                        style={{ marginTop: 6, marginLeft: 12, fontSize: 11, background: 'none', border: 'none', textDecoration: 'underline', cursor: 'pointer' }}>
-                        Reply
-                      </button>
-                    )}
-                  </div>
-                )
-              })}
-
-              <textarea value={p.draftText} onChange={(e) => p.setDraftText(e.target.value)} placeholder={`Add a ${p.scope} note...`}
-                style={{ width: '100%', minHeight: 50, boxSizing: 'border-box', marginBottom: 6 }} />
-
-              <div style={{ marginBottom: 6 }}>
-                <label style={{ fontSize: 12, cursor: 'pointer' }}>
-                  Attach a photo
-                  <input type="file" accept="image/*" style={{ display: 'block', marginTop: 4 }}
-                    onChange={(e) => p.setDraftImageFile(e.target.files?.[0] || null)} />
-                </label>
-              </div>
-
-              <label style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
-                <input type="checkbox" checked={p.draftLinkOn} onChange={(e) => p.setDraftLinkOn(e.target.checked)} /> Link this note to another verse
-              </label>
-              {p.draftLinkOn && (
-                <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
-                  <select value={p.draftLink.book} onChange={(e) => p.setDraftLink((d) => ({ ...d, book: e.target.value, chapter: chaptersFor(e.target.value)[0] }))}>
-                    {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
-                  </select>
-                  <select value={p.draftLink.chapter} onChange={(e) => p.setDraftLink((d) => ({ ...d, chapter: Number(e.target.value) }))}>
-                    {chaptersFor(p.draftLink.book).map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <input type="number" min={1} value={p.draftLink.verse} onChange={(e) => p.setDraftLink((d) => ({ ...d, verse: e.target.value }))} style={{ width: 50 }} />
-                  <select value={p.draftLink.type} onChange={(e) => p.setDraftLink((d) => ({ ...d, type: e.target.value }))}>
-                    <option value="cross-ref">Cross-reference</option>
-                    <option value="prophecy">Prophecy - fulfilled here</option>
-                  </select>
-                </div>
-              )}
-
-              <button onClick={() => addNote(p, v.n)} disabled={p.saving} style={{ cursor: 'pointer' }}>{p.saving ? 'Saving...' : 'Save note'}</button>
-            </div>
-          )}
+          {isSelected && renderVerseToolbar(p, p.book, p.chapter, v.n, v.t, notesHere)}
         </div>
       )
       })}
@@ -1912,6 +1920,75 @@ export default function HomePage() {
     replyText: splitReplyText, setReplyText: setSplitReplyText,
     themeDraft: splitThemeDraft, setThemeDraft: setSplitThemeDraft,
     themeMenuOpen: splitThemeMenuOpen, setThemeMenuOpen: setSplitThemeMenuOpen,
+  }
+
+  // Verse-aligned parallel view - used instead of two independent panes
+  // when mirrorPassage is on (the "English + Arabic" one-click button).
+  // Shows both languages in a two-column grid, one row per verse number,
+  // so verse 1 sits next to verse 1, verse 2 next to verse 2, etc. Reuses
+  // renderVerseToolbar so highlighting/notes/themes/meditate/memorize all
+  // work exactly the same as the normal reading pane - selecting a verse
+  // (from either language) opens one toolbar spanning the full row width.
+  function renderParallelAligned() {
+    const leftEntry = chapterCache[chapterCacheKey(book, chapter, bibleLang)]
+    const rightEntry = chapterCache[chapterCacheKey(book, chapter, splitLang)]
+    if (!leftEntry || leftEntry.loading || !rightEntry || rightEntry.loading) {
+      return <p style={{ fontSize: 13, opacity: 0.6 }}>Loading {book} {chapter}...</p>
+    }
+    if (leftEntry.error || rightEntry.error) {
+      return <p style={{ fontSize: 13, color: themePalette.danger }}>Couldn't load {book} {chapter}: {leftEntry.error || rightEntry.error}</p>
+    }
+    const leftByN = {}
+    leftEntry.verses.forEach((v) => { leftByN[v.n] = v.t })
+    const rightByN = {}
+    rightEntry.verses.forEach((v) => { rightByN[v.n] = v.t })
+    const verseNums = Array.from(new Set([...Object.keys(leftByN), ...Object.keys(rightByN)].map(Number))).sort((a, b) => a - b)
+
+    const cellStyle = (dir) => ({
+      fontFamily: dir === 'rtl' ? 'inherit' : "'Lora', Georgia, serif",
+      fontSize: 17, lineHeight: 1.75, textAlign: dir === 'rtl' ? 'right' : 'left',
+    })
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 20, rowGap: 4 }}>
+        {verseNums.map((n) => {
+          const key = vKey(book, chapter, n)
+          const isSelected = leftPane.selectedVerse === n
+          const notesHere = notesForVerse(book, chapter, n)
+          const highlightBg = highlights[key] ? HIGHLIGHTS[highlights[key]] : 'transparent'
+          const toggle = () => { leftPane.setSelectedVerse(isSelected ? null : n); leftPane.setThemeMenuOpen(false) }
+          return (
+            <Fragment key={n}>
+              <div style={{ marginBottom: 12, paddingBottom: 4, borderBottom: `1px solid ${themePalette.hairline}`, ...cellStyle(leftEntry.dir) }} dir={leftEntry.dir === 'rtl' ? 'rtl' : 'ltr'}>
+                {leftByN[n] !== undefined ? (
+                  <span onClick={toggle} style={{ cursor: 'pointer', background: highlightBg, outline: isSelected ? `2px solid ${resolvedAccent}` : 'none', borderRadius: 3 }}>
+                    <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{n}</sup>{leftByN[n]}
+                  </span>
+                ) : <span style={{ opacity: 0.4, fontSize: 13 }}>—</span>}
+                {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
+              </div>
+              <div style={{ marginBottom: 12, paddingBottom: 4, borderBottom: `1px solid ${themePalette.hairline}`, ...cellStyle(rightEntry.dir) }} dir={rightEntry.dir === 'rtl' ? 'rtl' : 'ltr'}>
+                {rightByN[n] !== undefined ? (
+                  <span onClick={toggle} style={{ cursor: 'pointer', background: highlightBg, outline: isSelected ? `2px solid ${resolvedAccent}` : 'none', borderRadius: 3 }}>
+                    <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{n}</sup>{rightByN[n]}
+                  </span>
+                ) : <span style={{ opacity: 0.4, fontSize: 13 }}>—</span>}
+              </div>
+              {isSelected && (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  {renderVerseToolbar(leftPane, book, chapter, n, leftByN[n] ?? rightByN[n], notesHere)}
+                </div>
+              )}
+            </Fragment>
+          )
+        })}
+        {(leftEntry.copyright || rightEntry.copyright) && (
+          <p style={{ gridColumn: '1 / -1', fontSize: 10, opacity: 0.5, marginTop: 12, textAlign: 'left', direction: 'ltr' }}>
+            {leftEntry.copyright} {rightEntry.copyright}
+          </p>
+        )}
+      </div>
+    )
   }
 
   // Home dashboard derived values
@@ -2346,9 +2423,6 @@ export default function HomePage() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-      <div style={{ flex: '1 1 300px', minWidth: 280 }}>
-
       <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span onClick={() => setShowSummary((s) => !s)} style={{ cursor: 'pointer', fontWeight: 600 }}>
@@ -2391,6 +2465,21 @@ export default function HomePage() {
         )}
       </div>
 
+      {mirrorPassage ? (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, opacity: 0.6 }}>Verses aligned side by side</span>
+            <button onClick={() => { setSplitOn(false); setMirrorPassage(false) }}
+              style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline' }}>
+              ✕ Exit
+            </button>
+          </div>
+          {renderParallelAligned()}
+        </div>
+      ) : (
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 300px', minWidth: 280 }}>
+
       {renderReadingPane(leftPane)}
 
       </div>
@@ -2398,28 +2487,17 @@ export default function HomePage() {
       {splitOn && (
         <div style={{ flex: '1 1 300px', minWidth: 280, borderLeft: `1px solid ${themePalette.hairline}`, paddingLeft: 20 }}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-            {mirrorPassage ? (
-              <>
-                <span style={{ fontSize: 12, opacity: 0.6 }}>Same passage as left</span>
-                <button onClick={() => setMirrorPassage(false)} style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline' }}>
-                  Browse independently
-                </button>
-              </>
-            ) : (
-              <>
-                <select value={splitBook} onChange={(e) => { setSplitBook(e.target.value); setSplitChapter(chaptersFor(e.target.value)[0]); setSplitSelectedVerse(null) }}>
-                  {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
-                </select>
-                <select value={splitChapter} onChange={(e) => { setSplitChapter(Number(e.target.value)); setSplitSelectedVerse(null) }}>
-                  {chaptersFor(splitBook).map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <select value={splitScope} onChange={(e) => setSplitScope(e.target.value)}>
-                  <option value="personal">Personal</option>
-                  <option value="family">Family</option>
-                </select>
-              </>
-            )}
-            <div style={{ display: 'flex', border: `1px solid ${themePalette.border}`, borderRadius: 6, overflow: 'hidden', marginLeft: mirrorPassage ? 'auto' : 0 }}>
+            <select value={splitBook} onChange={(e) => { setSplitBook(e.target.value); setSplitChapter(chaptersFor(e.target.value)[0]); setSplitSelectedVerse(null) }}>
+              {BOOK_LIST.map((b) => <option key={b} value={b}>{b}</option>)}
+            </select>
+            <select value={splitChapter} onChange={(e) => { setSplitChapter(Number(e.target.value)); setSplitSelectedVerse(null) }}>
+              {chaptersFor(splitBook).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select value={splitScope} onChange={(e) => setSplitScope(e.target.value)}>
+              <option value="personal">Personal</option>
+              <option value="family">Family</option>
+            </select>
+            <div style={{ display: 'flex', border: `1px solid ${themePalette.border}`, borderRadius: 6, overflow: 'hidden' }}>
               <button onClick={() => setSplitLang('en')}
                 style={{ padding: '5px 12px', fontSize: 12, cursor: 'pointer', border: 'none',
                   background: splitLang === 'en' ? resolvedAccent : themePalette.surface, color: splitLang === 'en' ? resolvedOnAccent : themePalette.textMuted }}>
@@ -2437,6 +2515,7 @@ export default function HomePage() {
         </div>
       )}
       </div>
+      )}
       </>)}
 
       </>)}
