@@ -301,6 +301,16 @@ export default function HomePage() {
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [splitThemeMenuOpen, setSplitThemeMenuOpen] = useState(false)
 
+  // "Link prayer to verse" - a small inline form inside the verse toolbar
+  // (see renderVerseToolbar) that creates a prayer already linked to the
+  // verse it was opened from, so it shows up right there under that verse
+  // going forward (via prayersForVerse).
+  const [prayerMenuOpen, setPrayerMenuOpen] = useState(false)
+  const [splitPrayerMenuOpen, setSplitPrayerMenuOpen] = useState(false)
+  const [prayerLinkDraft, setPrayerLinkDraft] = useState({ title: '', details: '', category: 'Family', shared: false })
+  const [splitPrayerLinkDraft, setSplitPrayerLinkDraft] = useState({ title: '', details: '', category: 'Family', shared: false })
+  const [savingPrayerLink, setSavingPrayerLink] = useState(false)
+
   // Characters tab - Family Tree + Timeline views over the curated
   // CHARACTERS dataset in lib/characters.js. Notes and hidden-character
   // choices are personal to the signed-in user (character_notes /
@@ -1169,6 +1179,44 @@ export default function HomePage() {
     }
   }
 
+  // Prayers already linked to a given verse, shown inline in the verse
+  // toolbar - same idea as notesForVerse but over the prayers list.
+  function prayersForVerse(b, c, v) {
+    return prayers.filter((p) => p.verse_book === b && p.verse_chapter === c && p.verse_verse === v)
+  }
+
+  // Creates a prayer already linked to a specific verse, from the verse
+  // toolbar's inline "Link prayer to verse" form. Separate from addPrayer()
+  // (used by the Prayers tab's own compose form) so the two forms' drafts
+  // never interfere with each other, and so this doesn't depend on stale
+  // state from setPrayerVerseOn/setPrayerVerse right before an insert.
+  async function addPrayerForVerse(book, chapter, vn, draft) {
+    if (!draft.title.trim() || !user) return
+    setSavingPrayerLink(true)
+    try {
+      const payload = {
+        user_id: user.id,
+        family_id: profile?.family_id || null,
+        title: draft.title.trim(),
+        details: draft.details.trim() || null,
+        category: draft.category,
+        is_shared: draft.shared,
+        verse_book: book,
+        verse_chapter: chapter,
+        verse_verse: vn,
+      }
+      const { data, error } = await supabase.from('prayers').insert(payload).select().single()
+      if (error) throw error
+      setPrayers((p) => [data, ...p])
+      return true
+    } catch (err) {
+      alert('Could not save prayer: ' + err.message)
+      return false
+    } finally {
+      setSavingPrayerLink(false)
+    }
+  }
+
   async function addPrayer() {
     if (!prayerTitle.trim() || !user) return
     setSavingPrayer(true)
@@ -1627,7 +1675,47 @@ export default function HomePage() {
           <button onClick={() => addMemoryVerse(book, chapter, vn)} style={{ fontSize: 12, cursor: 'pointer' }}>
             📇 Memorize
           </button>
+          <button onClick={() => p.setPrayerMenuOpen(!p.prayerMenuOpen)} style={{ fontSize: 12, cursor: 'pointer' }}>
+            🙏 Prayer{prayersForVerse(book, chapter, vn).length > 0 ? ` (${prayersForVerse(book, chapter, vn).length})` : ''}
+          </button>
         </div>
+
+        {prayersForVerse(book, chapter, vn).length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            {prayersForVerse(book, chapter, vn).map((pr) => (
+              <div key={pr.id} onClick={() => setTab('prayers')}
+                style={{ fontSize: 12, marginBottom: 4, cursor: 'pointer', opacity: pr.is_answered ? 0.55 : 1 }}>
+                🙏 {pr.is_answered ? '✅ ' : ''}{pr.title}{pr.is_shared ? ' · Family' : ''}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {p.prayerMenuOpen && (
+          <div style={{ marginBottom: 10, background: themePalette.surface, borderRadius: 6, padding: 8 }}>
+            <input value={p.prayerLinkDraft.title} onChange={(e) => p.setPrayerLinkDraft((d) => ({ ...d, title: e.target.value }))}
+              placeholder="What are you praying for?" style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6, fontSize: 12, padding: 4 }} />
+            <textarea value={p.prayerLinkDraft.details} onChange={(e) => p.setPrayerLinkDraft((d) => ({ ...d, details: e.target.value }))}
+              placeholder="Details (optional)" style={{ width: '100%', boxSizing: 'border-box', minHeight: 40, marginBottom: 6, fontSize: 12, padding: 4 }} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+              <select value={p.prayerLinkDraft.category} onChange={(e) => p.setPrayerLinkDraft((d) => ({ ...d, category: e.target.value }))} style={{ fontSize: 12 }}>
+                {PRAYER_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <label style={{ fontSize: 12 }}>
+                <input type="checkbox" checked={p.prayerLinkDraft.shared} onChange={(e) => p.setPrayerLinkDraft((d) => ({ ...d, shared: e.target.checked }))} /> Share with family
+              </label>
+            </div>
+            <button
+              onClick={async () => {
+                const ok = await addPrayerForVerse(book, chapter, vn, p.prayerLinkDraft)
+                if (ok) { p.setPrayerLinkDraft({ title: '', details: '', category: 'Family', shared: false }); p.setPrayerMenuOpen(false) }
+              }}
+              disabled={savingPrayerLink || !p.prayerLinkDraft.title.trim()}
+              style={{ fontSize: 12, cursor: 'pointer' }}>
+              {savingPrayerLink ? 'Saving...' : 'Save prayer'}
+            </button>
+          </div>
+        )}
 
         {p.themeMenuOpen && (
         <div style={{ marginBottom: 10 }}>
@@ -1771,6 +1859,7 @@ export default function HomePage() {
             <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{v.n}</sup>{v.t}
           </span>
           {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
+          {prayersForVerse(p.book, p.chapter, v.n).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>🙏 {prayersForVerse(p.book, p.chapter, v.n).length}</span>}
 
           {isSelected && renderVerseToolbar(p, p.book, p.chapter, v.n, v.t, notesHere)}
         </div>
@@ -1918,6 +2007,8 @@ export default function HomePage() {
     replyText, setReplyText,
     themeDraft, setThemeDraft,
     themeMenuOpen, setThemeMenuOpen,
+    prayerMenuOpen, setPrayerMenuOpen,
+    prayerLinkDraft, setPrayerLinkDraft,
   }
 
   const rightPane = {
@@ -1932,6 +2023,8 @@ export default function HomePage() {
     replyText: splitReplyText, setReplyText: setSplitReplyText,
     themeDraft: splitThemeDraft, setThemeDraft: setSplitThemeDraft,
     themeMenuOpen: splitThemeMenuOpen, setThemeMenuOpen: setSplitThemeMenuOpen,
+    prayerMenuOpen: splitPrayerMenuOpen, setPrayerMenuOpen: setSplitPrayerMenuOpen,
+    prayerLinkDraft: splitPrayerLinkDraft, setPrayerLinkDraft: setSplitPrayerLinkDraft,
   }
 
   // Verse-aligned parallel view - used instead of two independent panes
@@ -1978,6 +2071,7 @@ export default function HomePage() {
                   </span>
                 ) : <span style={{ opacity: 0.4, fontSize: 13 }}>—</span>}
                 {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
+                {prayersForVerse(book, chapter, n).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>🙏 {prayersForVerse(book, chapter, n).length}</span>}
               </div>
               <div style={{ marginBottom: 12, paddingBottom: 4, borderBottom: `1px solid ${themePalette.hairline}`, ...cellStyle(rightEntry.dir) }} dir={rightEntry.dir === 'rtl' ? 'rtl' : 'ltr'}>
                 {rightByN[n] !== undefined ? (
