@@ -382,6 +382,19 @@ export default function HomePage() {
   const [prayerVerseOn, setPrayerVerseOn] = useState(false)
   const [prayerVerse, setPrayerVerse] = useState({ book: 'Genesis', chapter: 1, verse: 1 })
   const [savingPrayer, setSavingPrayer] = useState(false)
+  // Custom prayer categories, on top of the built-in PRAYER_CATEGORIES list.
+  // Loaded from Supabase (family_id-scoped, so a category any family member
+  // adds becomes available to the whole family - same sharing model as the
+  // family_id columns elsewhere in the app). allPrayerCategories is what
+  // every category <select> in the app should render from.
+  const [customCategories, setCustomCategories] = useState([])
+  const [newCategoryDraft, setNewCategoryDraft] = useState('')
+  const [savingCategory, setSavingCategory] = useState(false)
+  const [showCategoryManager, setShowCategoryManager] = useState(false)
+  const allPrayerCategories = [...PRAYER_CATEGORIES, ...customCategories.map((c) => c.name)]
+  useEffect(() => {
+    if (!allPrayerCategories.includes(prayerCategory)) setPrayerCategory('Family')
+  }, [customCategories]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Search
   const [searchQuery, setSearchQuery] = useState('')
@@ -532,6 +545,9 @@ export default function HomePage() {
 
     const { data: pr } = await supabase.from('prayers').select('*').order('created_at', { ascending: false })
     setPrayers(pr || [])
+
+    const { data: pc } = await supabase.from('prayer_categories').select('*').order('name', { ascending: true })
+    setCustomCategories(pc || [])
 
     const { data: cs } = await supabase.from('chapter_summaries').select('*')
     const csMap = {}
@@ -1260,6 +1276,41 @@ export default function HomePage() {
     setPrayers((p) => p.filter((pr) => pr.id !== prayerId))
   }
 
+  // Adds a custom prayer category. Shared with the whole family (via
+  // family_id) if this profile belongs to one, otherwise personal-only.
+  // Mirrors addPrayer()'s payload/error-handling shape.
+  async function addCustomCategory(rawName) {
+    const name = rawName.trim()
+    if (!name || !user) return
+    if (allPrayerCategories.some((c) => c.toLowerCase() === name.toLowerCase())) {
+      alert('That category already exists.')
+      return
+    }
+    setSavingCategory(true)
+    try {
+      const payload = { owner_id: user.id, family_id: profile?.family_id || null, name }
+      const { data, error } = await supabase.from('prayer_categories').insert(payload).select().single()
+      if (error) throw error
+      setCustomCategories((c) => [...c, data].sort((a, b) => a.name.localeCompare(b.name)))
+      setNewCategoryDraft('')
+    } catch (err) {
+      alert('Could not add category: ' + err.message)
+    } finally {
+      setSavingCategory(false)
+    }
+  }
+
+  // Deletes a custom category. RLS restricts this to the category's
+  // creator; the UI also only shows the Delete button to its owner.
+  // Prayers already using the deleted category keep their stored label,
+  // it just stops appearing as a selectable option.
+  async function deleteCustomCategory(catId) {
+    if (!confirm('Delete this category? Prayers already using it will keep the label, but it will no longer appear in the list.')) return
+    const { error } = await supabase.from('prayer_categories').delete().eq('id', catId)
+    if (error) { alert('Could not delete category: ' + error.message); return }
+    setCustomCategories((c) => c.filter((cat) => cat.id !== catId))
+  }
+
   async function saveChapterSummary() {
     if (!summaryDraft.trim() || !user) return
     setSavingSummary(true)
@@ -1699,7 +1750,7 @@ export default function HomePage() {
               placeholder="Details (optional)" style={{ width: '100%', boxSizing: 'border-box', minHeight: 40, marginBottom: 6, fontSize: 12, padding: 4 }} />
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
               <select value={p.prayerLinkDraft.category} onChange={(e) => p.setPrayerLinkDraft((d) => ({ ...d, category: e.target.value }))} style={{ fontSize: 12 }}>
-                {PRAYER_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                {allPrayerCategories.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
               <label style={{ fontSize: 12 }}>
                 <input type="checkbox" checked={p.prayerLinkDraft.shared} onChange={(e) => p.setPrayerLinkDraft((d) => ({ ...d, shared: e.target.checked }))} /> Share with family
@@ -2745,11 +2796,45 @@ export default function HomePage() {
 
             <div style={{ display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap', alignItems: 'center' }}>
               <select value={prayerCategory} onChange={(e) => setPrayerCategory(e.target.value)}>
-                {PRAYER_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                {allPrayerCategories.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
               <label style={{ fontSize: 12 }}>
                 <input type="checkbox" checked={prayerShared} onChange={(e) => setPrayerShared(e.target.checked)} /> Share with family
               </label>
+            </div>
+
+            <div style={{ marginBottom: 6 }}>
+              <button onClick={() => setShowCategoryManager((s) => !s)}
+                style={{ fontSize: 11, cursor: 'pointer', background: 'none', border: 'none', textDecoration: 'underline', padding: 0 }}>
+                {showCategoryManager ? 'Hide categories' : '+ Manage categories'}
+              </button>
+              {showCategoryManager && (
+                <div style={{ marginTop: 6, padding: 8, background: themePalette.surface, borderRadius: 6 }}>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                    <input value={newCategoryDraft} onChange={(e) => setNewCategoryDraft(e.target.value)}
+                      placeholder="New category name" style={{ flex: 1, fontSize: 12, padding: 4, boxSizing: 'border-box' }} />
+                    <button onClick={() => addCustomCategory(newCategoryDraft)} disabled={savingCategory || !newCategoryDraft.trim()}
+                      style={{ fontSize: 12, cursor: 'pointer' }}>
+                      {savingCategory ? 'Adding...' : 'Add'}
+                    </button>
+                  </div>
+                  {customCategories.length === 0 ? (
+                    <p style={{ fontSize: 11, opacity: 0.6, margin: 0 }}>No custom categories yet.</p>
+                  ) : (
+                    customCategories.map((c) => (
+                      <div key={c.id} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <span>{c.name}{c.family_id ? ' · Family' : ''}</span>
+                        {c.owner_id === user.id && (
+                          <button onClick={() => deleteCustomCategory(c.id)}
+                            style={{ fontSize: 11, color: themePalette.danger, background: 'none', border: 'none', cursor: 'pointer' }}>
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
 
             <label style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
