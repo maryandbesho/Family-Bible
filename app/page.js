@@ -289,6 +289,10 @@ export default function HomePage() {
   // normal reading pane. Re-entering the Read tab always resets to 'books'
   // (see the useEffect below, near the other tab-driven effects).
   const [readStage, setReadStage] = useState('books')
+  // The search lens shown inline within the Read tab (replaces the old
+  // standalone Search tab). true = show the search box/results instead
+  // of the books/chapters/reading content for this tab.
+  const [showReadSearch, setShowReadSearch] = useState(false)
   const [browserSelectedBook, setBrowserSelectedBook] = useState(null)
 
   // Verse themes ("folders") - each row tags one verse with one theme
@@ -1931,7 +1935,7 @@ export default function HomePage() {
   }
 
   function jumpToVerse(b, c, v) {
-    setBook(b); setChapter(c); setSelectedVerse(v); setTab('read')
+    setBook(b); setChapter(c); setSelectedVerse(v); setReadStage('reading'); setShowReadSearch(false); setTab('read')
   }
 
   if (loading) return <div style={{ padding: 40 }}>Loading...</div>
@@ -2173,11 +2177,10 @@ export default function HomePage() {
   const ALL_NAV_TABS = [
     { key: 'home', label: 'Home', group: 'Today' },
     { key: 'read', label: 'Read', group: 'Today' },
-    { key: 'memorize', label: `Memorize${dueMemoryVerses.length > 0 ? ` (${dueMemoryVerses.length})` : ''}`, group: 'Today' },
-    { key: 'search', label: 'Search', group: 'Today' },
     { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}`, group: 'Family & Faith' },
-    { key: 'themes', label: 'Themes', group: 'Family & Faith' },
     { key: 'characters', label: 'Characters', group: 'Family & Faith' },
+    { key: 'themes', label: 'Themes', group: 'Family & Faith' },
+    { key: 'memorize', label: `Memorize${dueMemoryVerses.length > 0 ? ` (${dueMemoryVerses.length})` : ''}`, group: 'App' },
     { key: 'settings', label: 'Settings', group: 'App' },
   ]
   // Kid Mode trims the nav down to the essentials; Settings always stays
@@ -2199,7 +2202,7 @@ export default function HomePage() {
             Family Bible{kidMode ? ' · Kid Mode' : ''}
           </div>
           <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
-            {tab === 'home' ? 'Home' : tab === 'read' ? 'Reading' : tab === 'memorize' ? 'Memorize' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'settings' ? 'Settings' : 'Search'}
+            {tab === 'home' ? 'Home' : tab === 'read' ? (showReadSearch ? 'Search' : 'Reading') : tab === 'memorize' ? 'Memorize' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : 'Settings'}
           </h1>
         </div>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
@@ -2476,6 +2479,63 @@ export default function HomePage() {
 
       {tab === 'read' && (<>
 
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button onClick={() => setShowReadSearch((s) => !s)}
+          style={{ cursor: 'pointer', fontSize: 13, padding: '6px 10px', borderRadius: 6, border: `1px solid ${themePalette.border}`, background: showReadSearch ? themePalette.chip : themePalette.surface, color: themePalette.text }}>
+          🔍 {showReadSearch ? 'Close search' : 'Search'}
+        </button>
+      </div>
+
+      {showReadSearch && (
+        <div>
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search Bible text and your notes..."
+            autoFocus
+            style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 14, marginBottom: 4 }}
+          />
+          <p style={{ fontSize: 11, opacity: 0.6, margin: '0 0 16px' }}>Bible-text search currently covers the English translations only.</p>
+
+          {searchQuery.trim() && (() => {
+            const noteResults = searchNotes(searchQuery)
+            return (
+              <>
+                <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Bible verses {bibleSearching ? '(searching...)' : `(${bibleSearchResults.length})`}</h3>
+                {!bibleSearching && bibleSearchResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
+                {bibleSearchResults.map((r) => (
+                  <div key={`${r.book}-${r.chapter}-${r.verse}`}
+                    onClick={() => jumpToVerse(r.book, r.chapter, r.verse)}
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
+                    <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>{r.book} {r.chapter}:{r.verse}</div>
+                    <div>{r.text}</div>
+                  </div>
+                ))}
+
+                <h3 style={{ fontSize: 15, margin: '20px 0 8px' }}>Your notes ({noteResults.length})</h3>
+                {noteResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
+                {noteResults.map((n) => (
+                  <div key={n.id}
+                    onClick={() => jumpToVerse(n.book, n.chapter, n.verse)}
+                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
+                    <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>
+                      {n.book} {n.chapter}:{n.verse} · {new Date(n.created_at).toLocaleDateString()} · {n.scope}
+                    </div>
+                    <div>{n.text}</div>
+                  </div>
+                ))}
+              </>
+            )
+          })()}
+
+          {!searchQuery.trim() && (
+            <p style={{ fontSize: 13, opacity: 0.6 }}>Start typing to search Bible verses and your saved notes.</p>
+          )}
+        </div>
+      )}
+
+      {!showReadSearch && (<>
+
       {readStage === 'books' && (() => {
         const bookRow = (b) => {
           const isBookmarked = bookmark && bookmark.book === b
@@ -2698,6 +2758,8 @@ export default function HomePage() {
 
       </>)}
 
+      </>)}
+
   {tab === 'memorize' && (
         <div>
           <div style={cardStyle}>
@@ -2912,54 +2974,6 @@ export default function HomePage() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {tab === 'search' && (
-        <div>
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search Bible text and your notes..."
-            autoFocus
-            style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 14, marginBottom: 4 }}
-          />
-          <p style={{ fontSize: 11, opacity: 0.6, margin: '0 0 16px' }}>Bible-text search currently covers the English translations only.</p>
-
-          {searchQuery.trim() && (() => {
-            const noteResults = searchNotes(searchQuery)
-            return (
-              <>
-                <h3 style={{ fontSize: 15, margin: '0 0 8px' }}>Bible verses {bibleSearching ? '(searching...)' : `(${bibleSearchResults.length})`}</h3>
-                {!bibleSearching && bibleSearchResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
-                {bibleSearchResults.map((r) => (
-                  <div key={`${r.book}-${r.chapter}-${r.verse}`}
-                    onClick={() => jumpToVerse(r.book, r.chapter, r.verse)}
-                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
-                    <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>{r.book} {r.chapter}:{r.verse}</div>
-                    <div>{r.text}</div>
-                  </div>
-                ))}
-
-                <h3 style={{ fontSize: 15, margin: '20px 0 8px' }}>Your notes ({noteResults.length})</h3>
-                {noteResults.length === 0 && <p style={{ fontSize: 13, opacity: 0.6 }}>No matches.</p>}
-                {noteResults.map((n) => (
-                  <div key={n.id}
-                    onClick={() => jumpToVerse(n.book, n.chapter, n.verse)}
-                    style={{ fontSize: 13, marginBottom: 10, paddingBottom: 10, borderBottom: `1px solid ${themePalette.hairline}`, cursor: 'pointer' }}>
-                    <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>
-                      {n.book} {n.chapter}:{n.verse} · {new Date(n.created_at).toLocaleDateString()} · {n.scope}
-                    </div>
-                    <div>{n.text}</div>
-                  </div>
-                ))}
-              </>
-            )
-          })()}
-
-          {!searchQuery.trim() && (
-            <p style={{ fontSize: 13, opacity: 0.6 }}>Start typing to search Bible verses and your saved notes.</p>
-          )}
         </div>
       )}
 
