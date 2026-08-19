@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { CHARACTERS, ERAS, getCharacter, getChildren, getParents, getSpouses, layoutTree } from '@/lib/characters'
+import { PLACES } from '@/lib/places'
 
 // All 66 books of the Protestant canon, with their USFM code (used to
 // talk to the /api/bible route) and total chapter count (used to build
@@ -77,6 +78,38 @@ function parseVKey(key) {
 }
 const PRAYER_CATEGORIES = ['Family', 'Health', 'Guidance', 'Praise', 'Other']
 const summaryKey = (b, c) => `${b}-${c}`
+
+// Builds a lookup from every place name/alias (lowercased) to its place id,
+// plus one combined regex used to find place mentions inside verse text.
+// Longer names are tried first in the alternation so e.g. "Antioch in
+// Pisidia" matches its own entry rather than being cut short by the plain
+// "Antioch" alias belonging to Antioch (Syria).
+const PLACE_LOOKUP = {}
+const placeTerms = []
+PLACES.forEach((pl) => {
+  const names = [pl.name, ...(pl.aliases || [])]
+  names.forEach((n) => {
+    PLACE_LOOKUP[n.toLowerCase()] = pl.id
+    placeTerms.push(n)
+  })
+})
+placeTerms.sort((a, b) => b.length - a.length)
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const PLACE_REGEX = new RegExp(`\\b(${placeTerms.map(escapeRegExp).join('|')})\\b`, 'gi')
+
+// Finds every place mention in a chunk of verse text, returning
+// non-overlapping {start, end, matchedText, placeId} spans in text order.
+function matchPlacesInText(text) {
+  if (!text) return []
+  const matches = []
+  PLACE_REGEX.lastIndex = 0
+  let m
+  while ((m = PLACE_REGEX.exec(text)) !== null) {
+    matches.push({ start: m.index, end: m.index + m[0].length, matchedText: m[0], placeId: PLACE_LOOKUP[m[0].toLowerCase()] })
+    if (m.index === PLACE_REGEX.lastIndex) PLACE_REGEX.lastIndex++
+  }
+  return matches
+}
 // Leitner-box spaced repetition intervals (days until next review), keyed
 // by box number 1-5. Correct answer advances a box (capped at 5);
 // incorrect resets to box 1.
@@ -252,6 +285,18 @@ export default function HomePage() {
   const [editingSummary, setEditingSummary] = useState(false)
   const [summaryDraft, setSummaryDraft] = useState('')
   const [savingSummary, setSavingSummary] = useState(false)
+
+  // Map tab - Leaflet is loaded from a CDN (no npm dependency, no API key
+  // needed) the first time the tab is opened. mapContainerRef holds the DOM
+  // node Leaflet mounts into; leafletMapRef/markersRef hold the live map
+  // and marker instances across renders (plain refs, not React state,
+  // since Leaflet manages its own internal DOM once created).
+  const mapContainerRef = useRef(null)
+  const leafletMapRef = useRef(null)
+  const markersRef = useRef({})
+  const [mapReady, setMapReady] = useState(false)
+  const [selectedPlaceId, setSelectedPlaceId] = useState(null)
+  const [placeSearchQuery, setPlaceSearchQuery] = useState('')
 
   // Split view — right pane is a fully independent reading pane
   const [splitOn, setSplitOn] = useState(false)
@@ -1911,7 +1956,7 @@ export default function HomePage() {
               borderRadius: 3,
             }}
           >
-            <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{v.n}</sup>{v.t}
+            <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{v.n}</sup>{highlightPlaces(v.t)}
           </span>
           {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
           {prayersForVerse(p.book, p.chapter, v.n).length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>🙏 {prayersForVerse(p.book, p.chapter, v.n).length}</span>}
@@ -1936,6 +1981,91 @@ export default function HomePage() {
 
   function jumpToVerse(b, c, v) {
     setBook(b); setChapter(c); setSelectedVerse(v); setReadStage('reading'); setShowReadSearch(false); setTab('read')
+  }
+
+  // Sends the user to the Map tab focused on a given place. Used both by
+  // the Map tab's own list and by clicking a place name inside verse text
+  // (see highlightPlaces()).
+  function goToPlace(placeId) {
+    setSelectedPlaceId(placeId)
+    setTab('map')
+  }
+
+  // Creates the Leaflet map and drops a marker for every entry in PLACES.
+  // Safe to call more than once - it no-ops if the map already exists or
+  // the container isn't mounted yet.
+  function initMap() {
+    if (!mapContainerRef.current || leafletMapRef.current || !window.L) return
+    const L = window.L
+    const map = L.map(mapContainerRef.current).setView([31.8, 35.2], 6)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 18,
+    }).addTo(map)
+    leafletMapRef.current = map
+    const markers = {}
+    PLACES.forEach((pl) => {
+      const marker = L.marker([pl.lat, pl.lng]).addTo(map)
+      marker.bindPopup(`<strong>${pl.name}</strong><br/>${pl.blurb}`)
+      marker.on('click', () => setSelectedPlaceId(pl.id))
+      markers[pl.id] = marker
+    })
+    markersRef.current = markers
+    setMapReady(true)
+  }
+
+  // Loads the Leaflet library from a CDN the first time the Map tab is
+  // opened (no npm dependency to add, no API key needed), then builds the
+  // map. Leaves everything in place if the tab is revisited later.
+  useEffect(() => {
+    if (tab !== 'map') return
+    if (window.L) { initMap(); return }
+    if (document.getElementById('leaflet-script')) return
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+    document.head.appendChild(link)
+    const script = document.createElement('script')
+    script.id = 'leaflet-script'
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+    script.onload = () => initMap()
+    document.body.appendChild(script)
+  }, [tab]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Flies the map to and opens the popup for whichever place was just
+  // selected - whether from the Map tab's own list/markers, or from
+  // clicking a place name inside verse text (goToPlace) before the map
+  // had finished loading.
+  useEffect(() => {
+    if (!mapReady || !selectedPlaceId || !leafletMapRef.current || !markersRef.current[selectedPlaceId]) return
+    const pl = PLACES.find((p) => p.id === selectedPlaceId)
+    if (!pl) return
+    leafletMapRef.current.flyTo([pl.lat, pl.lng], 9)
+    markersRef.current[selectedPlaceId].openPopup()
+  }, [selectedPlaceId, mapReady])
+
+  // Wraps any place names found in a verse's text with clickable links to
+  // the Map tab. Returns the original string unchanged if no place is
+  // mentioned, or an array of text/element nodes otherwise.
+  function highlightPlaces(text) {
+    if (!text) return text
+    const matches = matchPlacesInText(text)
+    if (matches.length === 0) return text
+    const nodes = []
+    let cursor = 0
+    matches.forEach((m, i) => {
+      if (m.start > cursor) nodes.push(text.slice(cursor, m.start))
+      nodes.push(
+        <span key={`place-${i}-${m.start}`}
+          onClick={(e) => { e.stopPropagation(); goToPlace(m.placeId) }}
+          style={{ textDecoration: 'underline dotted', textDecorationColor: resolvedAccent, cursor: 'pointer' }}>
+          {m.matchedText}
+        </span>
+      )
+      cursor = m.end
+    })
+    if (cursor < text.length) nodes.push(text.slice(cursor))
+    return nodes
   }
 
   if (loading) return <div style={{ padding: 40 }}>Loading...</div>
@@ -2122,7 +2252,7 @@ export default function HomePage() {
               <div style={{ marginBottom: 12, paddingBottom: 4, borderBottom: `1px solid ${themePalette.hairline}`, ...cellStyle(leftEntry.dir) }} dir={leftEntry.dir === 'rtl' ? 'rtl' : 'ltr'}>
                 {leftByN[n] !== undefined ? (
                   <span onClick={toggle} style={{ cursor: 'pointer', background: highlightBg, outline: isSelected ? `2px solid ${resolvedAccent}` : 'none', borderRadius: 3 }}>
-                    <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{n}</sup>{leftByN[n]}
+                    <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{n}</sup>{highlightPlaces(leftByN[n])}
                   </span>
                 ) : <span style={{ opacity: 0.4, fontSize: 13 }}>—</span>}
                 {notesHere.length > 0 && <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.6, fontFamily: "'Inter', system-ui, sans-serif" }}>Notes: {notesHere.length}</span>}
@@ -2131,7 +2261,7 @@ export default function HomePage() {
               <div style={{ marginBottom: 12, paddingBottom: 4, borderBottom: `1px solid ${themePalette.hairline}`, ...cellStyle(rightEntry.dir) }} dir={rightEntry.dir === 'rtl' ? 'rtl' : 'ltr'}>
                 {rightByN[n] !== undefined ? (
                   <span onClick={toggle} style={{ cursor: 'pointer', background: highlightBg, outline: isSelected ? `2px solid ${resolvedAccent}` : 'none', borderRadius: 3 }}>
-                    <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{n}</sup>{rightByN[n]}
+                    <sup style={{ opacity: 0.6, marginRight: 4, fontFamily: "'Inter', system-ui, sans-serif", color: themePalette.textMuted }}>{n}</sup>{highlightPlaces(rightByN[n])}
                   </span>
                 ) : <span style={{ opacity: 0.4, fontSize: 13 }}>—</span>}
               </div>
@@ -2179,13 +2309,14 @@ export default function HomePage() {
     { key: 'read', label: 'Read', group: 'Today' },
     { key: 'prayers', label: `Prayers${prayers.filter((p) => !p.is_answered).length > 0 ? ` (${prayers.filter((p) => !p.is_answered).length})` : ''}`, group: 'Family & Faith' },
     { key: 'characters', label: 'Characters', group: 'Family & Faith' },
+    { key: 'map', label: 'Map', group: 'Family & Faith' },
     { key: 'themes', label: 'Themes', group: 'Family & Faith' },
     { key: 'memorize', label: `Memorize${dueMemoryVerses.length > 0 ? ` (${dueMemoryVerses.length})` : ''}`, group: 'App' },
     { key: 'settings', label: 'Settings', group: 'App' },
   ]
   // Kid Mode trims the nav down to the essentials; Settings always stays
   // reachable so the toggle can be turned back off.
-  const KID_MODE_TABS = ['home', 'read', 'memorize', 'prayers', 'settings']
+  const KID_MODE_TABS = ['home', 'read', 'memorize', 'prayers', 'map', 'settings']
   const visibleNavTabs = kidMode ? ALL_NAV_TABS.filter((t) => KID_MODE_TABS.includes(t.key)) : ALL_NAV_TABS
   const navGroupOrder = ['Today', 'Family & Faith', 'App']
   const navGroups = navGroupOrder
@@ -2202,7 +2333,7 @@ export default function HomePage() {
             Family Bible{kidMode ? ' · Kid Mode' : ''}
           </div>
           <h1 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 26, margin: 0, fontWeight: 600, color: themePalette.text }}>
-            {tab === 'home' ? 'Home' : tab === 'read' ? (showReadSearch ? 'Search' : 'Reading') : tab === 'memorize' ? 'Memorize' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : 'Settings'}
+            {tab === 'home' ? 'Home' : tab === 'read' ? (showReadSearch ? 'Search' : 'Reading') : tab === 'memorize' ? 'Memorize' : tab === 'prayers' ? 'Prayer List' : tab === 'themes' ? 'Themes' : tab === 'characters' ? 'Characters' : tab === 'map' ? 'Bible Map' : 'Settings'}
           </h1>
         </div>
         <button onClick={signOut} style={{ fontSize: 13, cursor: 'pointer', background: 'none', border: 'none', color: themePalette.textMuted, textDecoration: 'underline' }}>Sign out</button>
@@ -3403,6 +3534,42 @@ export default function HomePage() {
           })()}
         </div>
       )}
+
+      {tab === 'map' && (() => {
+        const q = placeSearchQuery.trim().toLowerCase()
+        const filteredPlaces = PLACES
+          .filter((pl) => !q || pl.name.toLowerCase().includes(q) || (pl.aliases || []).some((a) => a.toLowerCase().includes(q)))
+          .sort((a, b) => a.name.localeCompare(b.name))
+        return (
+          <div>
+            <input
+              value={placeSearchQuery}
+              onChange={(e) => setPlaceSearchQuery(e.target.value)}
+              placeholder="Search biblical places..."
+              style={{ width: '100%', boxSizing: 'border-box', padding: 8, fontSize: 14, marginBottom: 12 }}
+            />
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              <div style={{ flex: '2 1 400px', minWidth: 280 }}>
+                <div ref={mapContainerRef} style={{ width: '100%', height: 440, borderRadius: 8, border: `1px solid ${themePalette.border}`, background: themePalette.surface }} />
+                {!mapReady && <p style={{ fontSize: 12, opacity: 0.6, marginTop: 8 }}>Loading map...</p>}
+              </div>
+              <div style={{ flex: '1 1 220px', minWidth: 200, maxHeight: 440, overflowY: 'auto' }}>
+                {filteredPlaces.map((pl) => (
+                  <div key={pl.id} onClick={() => setSelectedPlaceId(pl.id)}
+                    style={{
+                      fontSize: 13, padding: '6px 8px', borderRadius: 6, cursor: 'pointer', marginBottom: 4,
+                      background: selectedPlaceId === pl.id ? themePalette.chip : 'transparent',
+                    }}>
+                    <div style={{ fontWeight: 600, color: themePalette.text }}>{pl.name}</div>
+                    <div style={{ fontSize: 11, opacity: 0.6, color: themePalette.textMuted }}>{pl.blurb}</div>
+                  </div>
+                ))}
+                {filteredPlaces.length === 0 && <p style={{ fontSize: 12, opacity: 0.6 }}>No places match your search.</p>}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {tab === 'settings' && (
         <div style={{ maxWidth: 480 }}>
