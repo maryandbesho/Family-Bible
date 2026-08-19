@@ -114,6 +114,12 @@ function matchPlacesInText(text) {
 // by box number 1-5. Correct answer advances a box (capped at 5);
 // incorrect resets to box 1.
 const MEMORY_BOX_INTERVALS = { 1: 1, 2: 2, 3: 4, 4: 8, 5: 14 }
+// What fraction of a verse's words are hidden during practice, keyed by
+// the same box number - newer/harder cards (low box) hide fewer words to
+// ease recall, well-known cards (high box) hide more to actually test
+// memorization. A fresh random selection of which words to hide is drawn
+// every time a card is shown, so it's never the same blanks twice.
+const MEMORY_BOX_HIDE_FRACTIONS = { 1: 0.2, 2: 0.35, 3: 0.5, 4: 0.65, 5: 0.8 }
 
 // Verse of the Day - a curated, deterministic pool of well-known verses.
 // The same verse shows for the whole family on a given calendar day (picked
@@ -418,7 +424,12 @@ export default function HomePage() {
   const [memoryAddVerse, setMemoryAddVerse] = useState(1)
   const [savingMemoryVerse, setSavingMemoryVerse] = useState(false)
   const [studyIndex, setStudyIndex] = useState(0)
-  const [studyFlipped, setStudyFlipped] = useState(false)
+  // Fill-in-the-blank practice state: maskedIndices is the set of word
+  // positions currently hidden for the active card (freshly randomized
+  // each time a card is shown - see the effect below); revealedIndices
+  // tracks which of those the user has individually tapped to reveal.
+  const [maskedIndices, setMaskedIndices] = useState([])
+  const [revealedIndices, setRevealedIndices] = useState(new Set())
   const [showAllFlashcards, setShowAllFlashcards] = useState(false)
 
   // Prayer list
@@ -757,7 +768,7 @@ export default function HomePage() {
   useEffect(() => {
     if (tab === 'memorize') {
       setStudyIndex(0)
-      setStudyFlipped(false)
+      setRevealedIndices(new Set())
     }
   }, [tab])
 
@@ -768,14 +779,36 @@ export default function HomePage() {
   }, [dueMemoryVerses.length])
 
   // Fetches chapter text for the flashcard currently shown in Practice, so
-  // "Show verse" can reveal it right away (fetchChapter no-ops if the
-  // chapter is already cached).
+  // the fill-in-the-blank view can render right away (fetchChapter no-ops
+  // if the chapter is already cached).
   useEffect(() => {
     if (tab !== 'memorize') return
     const card = dueMemoryVerses[studyIndex]
     if (!card) return
     fetchChapter(card.book, card.chapter, bibleLang)
   }, [tab, studyIndex, dueMemoryVerses, bibleLang, fetchChapter])
+
+  // Draws a fresh set of blanked-out words for the active card, once its
+  // text is available. Runs again whenever the card itself changes (by id)
+  // or its text first loads - so a different part of the verse is hidden
+  // every time it's shown, rather than the same words twice in a row.
+  useEffect(() => {
+    const card = dueMemoryVerses[studyIndex]
+    if (!card) { setMaskedIndices([]); return }
+    const verseText = themeVerseText(card.book, card.chapter, card.verse)
+    if (!verseText) return
+    const words = verseText.split(/\s+/)
+    const hideFraction = MEMORY_BOX_HIDE_FRACTIONS[card.box] || 0.35
+    const hideCount = Math.max(1, Math.round(words.length * hideFraction))
+    const indices = Array.from({ length: words.length }, (_, i) => i)
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[indices[i], indices[j]] = [indices[j], indices[i]]
+    }
+    setMaskedIndices(indices.slice(0, hideCount))
+    setRevealedIndices(new Set())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dueMemoryVerses[studyIndex]?.id, themeVerseText(dueMemoryVerses[studyIndex]?.book, dueMemoryVerses[studyIndex]?.chapter, dueMemoryVerses[studyIndex]?.verse)])
 
   // When viewing a theme folder, make sure each tagged verse's chapter
   // text is loaded so we can show the actual verse, not just the reference.
@@ -1058,7 +1091,7 @@ export default function HomePage() {
     }).eq('id', id).select().single()
     if (!error && data) {
       setMemoryVerses((mv) => mv.map((m) => (m.id === id ? data : m)))
-      setStudyFlipped(false)
+      setRevealedIndices(new Set())
     }
   }
 
@@ -2904,24 +2937,44 @@ export default function HomePage() {
             ) : (() => {
               const card = dueMemoryVerses[studyIndex]
               const verseText = themeVerseText(card.book, card.chapter, card.verse)
+              const words = verseText ? verseText.split(/\s+/) : []
+              const allRevealed = maskedIndices.length === 0 || maskedIndices.every((i) => revealedIndices.has(i))
               return (
                 <div>
                   <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10 }}>
-                    Card {studyIndex + 1} of {dueMemoryVerses.length}
+                    Card {studyIndex + 1} of {dueMemoryVerses.length} · Box {card.box}
                   </div>
                   <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 20, textAlign: 'center', marginBottom: 12 }}>
-                    <div style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, marginBottom: studyFlipped ? 12 : 0 }}>
+                    <div style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 18, marginBottom: 12 }}>
                       {card.book} {card.chapter}:{card.verse}
                     </div>
-                    {studyFlipped && (
-                      <div style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 15, lineHeight: 1.6 }}>
-                        {verseText || 'Loading verse...'}
+                    {!verseText ? (
+                      <p style={{ fontSize: 13, opacity: 0.6 }}>Loading verse...</p>
+                    ) : (
+                      <div style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 15, lineHeight: 1.8 }}>
+                        {words.map((w, i) => {
+                          const isMasked = maskedIndices.includes(i)
+                          const isRevealed = revealedIndices.has(i)
+                          if (!isMasked || isRevealed) {
+                            return <span key={i}>{w} </span>
+                          }
+                          return (
+                            <span key={i}
+                              onClick={() => setRevealedIndices((r) => new Set([...r, i]))}
+                              style={{
+                                cursor: 'pointer', display: 'inline-block', minWidth: `${Math.max(2, w.length * 0.6)}em`,
+                                borderBottom: `2px solid ${resolvedAccent}`, marginRight: 4, color: 'transparent',
+                              }}>
+                              {w}
+                            </span>
+                          )
+                        })}
                       </div>
                     )}
                   </div>
-                  {!studyFlipped ? (
-                    <button onClick={() => setStudyFlipped(true)} style={{ cursor: 'pointer', padding: '8px 16px' }}>
-                      Show verse
+                  {!allRevealed ? (
+                    <button onClick={() => setRevealedIndices(new Set(maskedIndices))} style={{ cursor: 'pointer', padding: '8px 16px' }}>
+                      Reveal remaining words
                     </button>
                   ) : (
                     <div style={{ display: 'flex', gap: 10 }}>
