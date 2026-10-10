@@ -107,6 +107,7 @@ export async function GET(request) {
   const booksFor = searchParams.get('booksFor') // 'ot' | 'nt', diagnostic
   const chaptersFor = searchParams.get('chaptersFor') // 'ot' | 'nt', diagnostic (uses &book=)
   const lang = searchParams.get('lang') || 'en'
+  const ot = searchParams.get('ot') // 'nkjv' = read Old Testament books from the NKJV instead of the Brenton Septuagint
 
   try {
     if (list) {
@@ -136,7 +137,7 @@ export async function GET(request) {
           { status: 500 }
         )
       }
-      return await handleChapter(book, chapter)
+      return await handleChapter(book, chapter, ot)
     }
     if (q) {
       if (!API_KEY || !BIBLE_ID_NT) {
@@ -215,14 +216,19 @@ const OT_BOOK_CODE_OVERRIDE = {
 // Confirmed directly against this edition's real chapter list.
 const NEHEMIAH_CHAPTER_OFFSET = 10
 
-async function handleChapter(book, chapter) {
+async function handleChapter(book, chapter, ot) {
   const info = bookInfo(book)
   if (!info) return NextResponse.json({ error: `Unknown book code: ${book}` }, { status: 400 })
-  const bibleId = info.testament === 'OT' ? BIBLE_ID_OT : BIBLE_ID_NT
+  // Optional: read Old Testament books from the NKJV (same edition the app
+  // already uses for the New Testament) instead of the Brenton Septuagint.
+  // NKJV uses the standard book codes and chapter numbering, so none of the
+  // Brenton-specific code overrides / Nehemiah offset below apply to it.
+  const useNkjvForOT = info.testament === 'OT' && ot === 'nkjv'
+  const bibleId = info.testament === 'OT' && !useNkjvForOT ? BIBLE_ID_OT : BIBLE_ID_NT
 
-  let apiBookCode = info.testament === 'OT' ? (OT_BOOK_CODE_OVERRIDE[book] || book) : book
+  let apiBookCode = info.testament === 'OT' && !useNkjvForOT ? (OT_BOOK_CODE_OVERRIDE[book] || book) : book
   let apiChapter = chapter
-  if (book === 'NEH') {
+  if (book === 'NEH' && !useNkjvForOT) {
     apiBookCode = 'EZR'
     apiChapter = String(Number(chapter) + NEHEMIAH_CHAPTER_OFFSET)
   }
@@ -244,7 +250,7 @@ async function handleChapter(book, chapter) {
     // For Nehemiah, api.bible's own reference string would say "Ezra and
     // Nehemiah 11" (its internal combined-book numbering) - override it
     // with the reference the person actually asked for.
-    reference: book === 'NEH' ? `Nehemiah ${chapter}` : json.data.reference,
+    reference: book === 'NEH' && !useNkjvForOT ? `Nehemiah ${chapter}` : json.data.reference,
     copyright: json.data.copyright || null,
     dir: 'ltr',
   })
