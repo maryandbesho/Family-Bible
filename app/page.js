@@ -63,7 +63,18 @@ const chaptersFor = (book) => {
   const meta = BOOK_META.find((b) => b.name === book)
   return meta ? Array.from({ length: meta.chapters }, (_, i) => i + 1) : []
 }
-const chapterCacheKey = (book, chapter, lang) => `${lang}-${book}-${chapter}`
+// Which English Old Testament to read: 'lxx' = Brenton Septuagint (default,
+// the text the Coptic Orthodox Church follows) or 'nkjv' = New King James.
+// Kept at module level (and mirrored in the otVersion React state, which is
+// what makes the screen re-render when it changes) so chapterCacheKey and
+// fetchChapter always agree on which version a cached chapter belongs to.
+// Only affects English Old Testament books - Arabic and the New Testament
+// are never touched by it.
+let OT_VERSION = 'lxx'
+const OT_VERSION_STORAGE_KEY = 'familybible-ot-version'
+const isOTBook = (book) => { const i = BOOK_LIST.indexOf(book); return i >= 0 && i < 39 }
+const otVersionFor = (book, lang) => (lang === 'en' && isOTBook(book) && OT_VERSION === 'nkjv' ? 'nkjv' : null)
+const chapterCacheKey = (book, chapter, lang) => `${lang}${otVersionFor(book, lang) ? '-nkjv' : ''}-${book}-${chapter}`
 const HIGHLIGHTS = { yellow: '#F0D774', green: '#B9CBA6', pink: '#E3B7B0', blue: '#A9C4D1' }
 const vKey = (b, c, v) => `${b}-${c}-${v}`
 // Reverses a vKey ("Book-chapter-verse") back into {book, chapter, verse}.
@@ -281,6 +292,7 @@ export default function HomePage() {
   // Septuagint (OT). 'ar' = Smith & Van Dyck Arabic (whole Bible).
   // Applies to both the main pane and the split-view pane.
   const [bibleLang, setBibleLang] = useState('en')
+  const [otVersion, setOtVersion] = useState('lxx') // 'lxx' | 'nkjv' - see OT_VERSION at the top of this file
 
   const [book, setBook] = useState('Psalms')
   const [chapter, setChapter] = useState(23)
@@ -669,7 +681,7 @@ export default function HomePage() {
       return { ...cache, [key]: { verses: [], loading: true, error: null, copyright: null, dir: 'ltr' } }
     })
     const usfm = usfmFor(book)
-    fetch(`/api/bible?book=${usfm}&chapter=${chapter}&lang=${lang}`)
+    fetch(`/api/bible?book=${usfm}&chapter=${chapter}&lang=${lang}${otVersionFor(book, lang) ? '&ot=nkjv' : ''}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.error) {
@@ -681,6 +693,22 @@ export default function HomePage() {
       .catch((err) => {
         setChapterCache((cache) => ({ ...cache, [key]: { verses: [], loading: false, error: String(err), copyright: null, dir: 'ltr' } }))
       })
+    // otVersion is listed so every effect that depends on fetchChapter
+    // re-runs (and re-fetches under the new cache keys) when it changes.
+  }, [otVersion])
+
+  function changeOtVersion(v) {
+    OT_VERSION = v
+    setOtVersion(v)
+    try { localStorage.setItem(OT_VERSION_STORAGE_KEY, v) } catch (e) { /* storage unavailable - just won't be remembered */ }
+  }
+
+  // Restore the remembered choice once on load.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(OT_VERSION_STORAGE_KEY)
+      if (saved === 'nkjv' || saved === 'lxx') { OT_VERSION = saved; setOtVersion(saved) }
+    } catch (e) { /* storage unavailable */ }
   }, [])
 
   useEffect(() => {
@@ -2815,6 +2843,21 @@ export default function HomePage() {
             العربية
           </button>
         </div>
+        <div title="Which English Old Testament to read" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 11, opacity: 0.6 }}>OT:</span>
+          <div style={{ display: 'flex', border: `1px solid ${themePalette.border}`, borderRadius: 6, overflow: 'hidden' }}>
+            <button onClick={() => changeOtVersion('lxx')}
+              style={{ padding: '5px 10px', fontSize: 12, cursor: 'pointer', border: 'none',
+                background: otVersion === 'lxx' ? resolvedAccent : themePalette.surface, color: otVersion === 'lxx' ? resolvedOnAccent : themePalette.textMuted }}>
+              Septuagint
+            </button>
+            <button onClick={() => changeOtVersion('nkjv')}
+              style={{ padding: '5px 10px', fontSize: 12, cursor: 'pointer', border: 'none',
+                background: otVersion === 'nkjv' ? resolvedAccent : themePalette.surface, color: otVersion === 'nkjv' ? resolvedOnAccent : themePalette.textMuted }}>
+              NKJV
+            </button>
+          </div>
+        </div>
         <button onClick={showParallelLanguages}
           style={{ fontSize: 12, cursor: 'pointer' }}>
           🌐 English + Arabic
@@ -2824,6 +2867,12 @@ export default function HomePage() {
           {splitOn ? '✕ Exit split view' : '⬛ Split view'}
         </button>
       </div>
+
+      {otVersion === 'nkjv' && isOTBook(book) && bibleLang === 'en' && (
+        <p style={{ fontSize: 12, opacity: 0.7, margin: '0 0 12px' }}>
+          Reading the NKJV Old Testament (Hebrew-based). Psalm numbers and some chapter/verse numbers differ from the Septuagint, so notes, highlights and prayers saved under one version may not line up in the other.
+        </p>
+      )}
 
       <div style={{ background: themePalette.surfaceAlt, borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 13 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
