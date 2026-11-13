@@ -394,6 +394,10 @@ export default function HomePage() {
   const [treePan, setTreePan] = useState({ x: 40, y: 20 })
   const [treeDragging, setTreeDragging] = useState(false)
   const [characterSearch, setCharacterSearch] = useState('')
+  // Family Tree: big branches start folded so the tree stays readable.
+  const [collapsedIds, setCollapsedIds] = useState(['levi', 'judah'])
+  const [treeBranchRoot, setTreeBranchRoot] = useState(null)
+  const [treeFocusRequest, setTreeFocusRequest] = useState(null)
 
   // Home dashboard: reading streak (auto-tracked), an editable reading
   // plan, and confession/communion logs. All personal to the signed-in
@@ -552,6 +556,20 @@ export default function HomePage() {
   useEffect(() => {
     if (tab === 'characters' && characterView === 'focus' && !selectedCharacterId) openCharacter('adam')
   }, [tab, characterView])
+
+  // After "Show in family tree" / "Show family line": once the tree has
+  // re-laid itself out, centre the view on the requested person.
+  useEffect(() => {
+    if (!treeFocusRequest) return
+    const pos = treePositions[treeFocusRequest]
+    if (pos) {
+      const z = 0.8
+      const cw = Math.min(window.innerWidth, 900) - 32
+      setTreeZoom(z)
+      setTreePan({ x: cw / 2 - (pos.x + TREE_PAD + TREE_NODE_W / 2) * z, y: 120 - (pos.y + TREE_PAD) * z })
+    }
+    setTreeFocusRequest(null)
+  }, [treeFocusRequest])
 
   useEffect(() => {
     try {
@@ -1184,12 +1202,75 @@ export default function HomePage() {
     return true
   })
   const visibleIds = new Set(visibleCharacters.map((c) => c.id))
-  const treePositions = layoutTree(visibleCharacters)
+
+  // ---- Which characters the Family Tree draws ------------------------------
+  // Folded branches (e.g. Levi's and Judah's lines) and the single-branch
+  // view remove people from the tree only; Browse and Timeline are unchanged.
+  const childMap = {}
+  visibleCharacters.forEach((c) => {
+    const ps = new Set(c.parentIds)
+    if (c.impliedGapFrom) ps.add(c.impliedGapFrom)
+    ps.forEach((p) => { if (visibleIds.has(p)) (childMap[p] = childMap[p] || []).push(c.id) })
+  })
+  function treeDescendants(id) {
+    const out = new Set()
+    const stack = [...(childMap[id] || [])]
+    while (stack.length) {
+      const x = stack.pop()
+      if (out.has(x)) continue
+      out.add(x)
+      ;(childMap[x] || []).forEach((k) => stack.push(k))
+    }
+    return out
+  }
+  const treeChars = (() => {
+    let set = new Set(visibleIds)
+    if (treeBranchRoot && visibleIds.has(treeBranchRoot)) {
+      const keepSet = new Set([treeBranchRoot, ...treeDescendants(treeBranchRoot)])
+      visibleCharacters.forEach((c) => {
+        if (keepSet.has(c.id)) c.spouseIds.forEach((sid) => { if (visibleIds.has(sid)) keepSet.add(sid) })
+      })
+      set = keepSet
+    }
+    collapsedIds.forEach((cid) => {
+      if (cid === treeBranchRoot || !set.has(cid)) return
+      treeDescendants(cid).forEach((d) => set.delete(d))
+    })
+    // Married-in people (e.g. Bathsheba and Uriah once David is folded away)
+    // go too: drop any married group whose partner was removed and that has
+    // no parent still on the page.
+    const seen = new Set()
+    visibleCharacters.forEach((c) => {
+      if (!set.has(c.id) || seen.has(c.id)) return
+      const comp = []
+      const stack = [c.id]
+      while (stack.length) {
+        const x = stack.pop()
+        if (seen.has(x) || !set.has(x)) continue
+        seen.add(x)
+        comp.push(x)
+        getCharacter(x).spouseIds.forEach((sid) => { if (set.has(sid)) stack.push(sid) })
+      }
+      const lostPartner = comp.some((x) => getCharacter(x).spouseIds.some((sid) => visibleIds.has(sid) && !set.has(sid)))
+      const rooted = comp.some((x) => {
+        const ch = getCharacter(x)
+        return x === treeBranchRoot || ch.parentIds.some((p) => set.has(p)) || (ch.impliedGapFrom && set.has(ch.impliedGapFrom))
+      })
+      if (lostPartner && !rooted) comp.forEach((x) => set.delete(x))
+    })
+    return visibleCharacters.filter((c) => set.has(c.id))
+  })()
+  const treeIds = new Set(treeChars.map((c) => c.id))
+  function toggleBranchCollapsed(id) {
+    setCollapsedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]))
+  }
+
+  const treePositions = layoutTree(treeChars)
   const TREE_NODE_W = 148
   const TREE_NODE_H = 52
   const TREE_PAD = 60
-  const treeMaxX = Math.max(0, ...visibleCharacters.map((c) => treePositions[c.id]?.x || 0))
-  const treeMaxY = Math.max(0, ...visibleCharacters.map((c) => treePositions[c.id]?.y || 0))
+  const treeMaxX = Math.max(0, ...treeChars.map((c) => treePositions[c.id]?.x || 0))
+  const treeMaxY = Math.max(0, ...treeChars.map((c) => treePositions[c.id]?.y || 0))
   const treeCanvasW = treeMaxX + TREE_NODE_W + TREE_PAD * 2
   const treeCanvasH = treeMaxY + TREE_NODE_H + TREE_PAD * 2
 
@@ -1201,8 +1282,8 @@ export default function HomePage() {
   const treeSpousePairs = (() => {
     const drawn = new Set()
     const pairs = []
-    visibleCharacters.forEach((c) => {
-      c.spouseIds.filter((sid) => visibleIds.has(sid)).forEach((sid) => {
+    treeChars.forEach((c) => {
+      c.spouseIds.filter((sid) => treeIds.has(sid)).forEach((sid) => {
         const key = [c.id, sid].sort().join('|')
         if (drawn.has(key)) return
         drawn.add(key)
@@ -1243,8 +1324,8 @@ export default function HomePage() {
   // separate lanes, and a couple's stem starts from the spouse line itself.
   const treeUnits = (() => {
     const units = {}
-    visibleCharacters.forEach((c) => {
-      const kp = c.parentIds.filter((pid) => visibleIds.has(pid) && treePositions[pid])
+    treeChars.forEach((c) => {
+      const kp = c.parentIds.filter((pid) => treeIds.has(pid) && treePositions[pid])
       if (kp.length === 0 || !treePositions[c.id]) return
       const key = kp.slice().sort().join('|')
       if (!units[key]) units[key] = { key, parentIds: kp, childIds: [] }
@@ -1289,16 +1370,21 @@ export default function HomePage() {
     return list
   })()
 
-  // Jump from the Browse view to a person's spot in the full tree.
+  // Jump from the Browse view / detail panel to a person's spot in the tree:
+  // opens any folded branch that is hiding them, then centres on them.
   function showCharacterInTree(id) {
-    const pos = treePositions[id]
+    setCollapsedIds((ids) => ids.filter((cid) => !treeDescendants(cid).has(id)))
+    if (treeBranchRoot && treeBranchRoot !== id && !treeDescendants(treeBranchRoot).has(id)) setTreeBranchRoot(null)
+    openCharacter(id)
     setCharacterView('tree')
-    setSelectedCharacterId(id)
-    if (!pos) return
-    const z = 0.8
-    const cw = Math.min(window.innerWidth, 900) - 32
-    setTreeZoom(z)
-    setTreePan({ x: cw / 2 - (pos.x + TREE_PAD + TREE_NODE_W / 2) * z, y: 120 - (pos.y + TREE_PAD) * z })
+    setTreeFocusRequest(id)
+  }
+  // Show ONLY this person's descendants (and their spouses).
+  function showBranchInTree(id) {
+    setTreeBranchRoot(id)
+    openCharacter(id)
+    setCharacterView('tree')
+    setTreeFocusRequest(id)
   }
 
   // The private-notes editor, shared by the tree/timeline detail panel and
@@ -3594,13 +3680,24 @@ export default function HomePage() {
                   <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 22, margin: 0, color: themePalette.text }}>{f.name}</h3>
                   {eraLabel && <div style={{ fontSize: 12, color: themePalette.textMuted, margin: '2px 0 10px' }}>{eraLabel}</div>}
                   <p style={{ fontSize: 14, lineHeight: 1.6, color: themePalette.text, margin: '0 0 12px' }}>{f.blurb}</p>
-                  <button onClick={() => showCharacterInTree(f.id)}
-                    style={{
-                      cursor: 'pointer', padding: '7px 12px', borderRadius: 8, fontSize: 12, marginBottom: 14,
-                      border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
-                    }}>
-                    📍 Show in family tree
-                  </button>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+                    <button onClick={() => showCharacterInTree(f.id)}
+                      style={{
+                        cursor: 'pointer', padding: '7px 12px', borderRadius: 8, fontSize: 12,
+                        border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
+                      }}>
+                      📍 Show in family tree
+                    </button>
+                    {(childMap[f.id] || []).length > 0 && (
+                      <button onClick={() => showBranchInTree(f.id)}
+                        style={{
+                          cursor: 'pointer', padding: '7px 12px', borderRadius: 8, fontSize: 12,
+                          border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
+                        }}>
+                        🌿 Show only {f.name}'s family line
+                      </button>
+                    )}
+                  </div>
                   {renderCharacterNotes(f)}
                 </div>
 
@@ -3620,7 +3717,19 @@ export default function HomePage() {
 
           {characterView === 'tree' && (
             <div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {treeBranchRoot && getCharacter(treeBranchRoot) ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13, color: themePalette.text }}>
+                    <span>Showing only <strong>{getCharacter(treeBranchRoot).name}</strong>'s family line</span>
+                    <button onClick={() => { setTreeBranchRoot(null); setTreeZoom(1); setTreePan({ x: 40, y: 20 }) }}
+                      style={{ cursor: 'pointer', padding: '5px 10px', borderRadius: 6, fontSize: 12, border: `1px solid ${resolvedAccent}`, background: themePalette.surface, color: themePalette.text }}>
+                      Show full tree
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: themePalette.textMuted }}>Tap a <strong>+</strong> badge to open a folded branch.</div>
+                )}
+                <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => setTreeZoom((z) => Math.max(0.2, z - 0.15))}
                   style={{ cursor: 'pointer', width: 30, height: 30, borderRadius: 6, border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text, fontSize: 16 }}>
                   −
@@ -3633,6 +3742,7 @@ export default function HomePage() {
                   style={{ cursor: 'pointer', width: 30, height: 30, borderRadius: 6, border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text, fontSize: 16 }}>
                   +
                 </button>
+                </div>
               </div>
 
               <div
@@ -3690,8 +3800,8 @@ export default function HomePage() {
                       // two so the lineage still reads as continuous instead
                       // of the descendant just appearing out of nowhere.
                       const lines = []
-                      visibleCharacters.forEach((c) => {
-                        if (!c.impliedGapFrom || !visibleIds.has(c.impliedGapFrom)) return
+                      treeChars.forEach((c) => {
+                        if (!c.impliedGapFrom || !treeIds.has(c.impliedGapFrom)) return
                         const p1 = treePositions[c.impliedGapFrom]
                         const p2 = treePositions[c.id]
                         if (!p1 || !p2) return
@@ -3701,18 +3811,22 @@ export default function HomePage() {
                         const y2 = p2.y + TREE_PAD
                         const midX = (x1 + x2) / 2
                         const midY = (y1 + y2) / 2
+                        const isSel = selectedCharacterId === c.id || selectedCharacterId === c.impliedGapFrom
                         lines.push(
                           <g key={`gap-${c.id}`}>
-                            <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} stroke={themePalette.textMuted} strokeWidth="1.5" strokeDasharray="1,4" strokeLinecap="round" fill="none" />
-                            <circle cx={midX} cy={midY} r="9" fill={themePalette.surfaceAlt} stroke={themePalette.textMuted} strokeWidth="1" />
-                            <text x={midX} y={midY + 3} textAnchor="middle" fontSize="10" fill={themePalette.textMuted}>⋯</text>
+                            {isSel && (
+                              <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} stroke={resolvedAccent} strokeWidth="2" strokeDasharray="2,4" strokeLinecap="round" fill="none" />
+                            )}
+                            <line x1={x2} y1={y2 - 22} x2={x2} y2={y2} stroke={themePalette.textMuted} strokeWidth="1.5" strokeDasharray="1,4" strokeLinecap="round" />
+                            <circle cx={x2} cy={y2 - 22} r="8" fill={themePalette.surfaceAlt} stroke={themePalette.textMuted} strokeWidth="1" />
+                            <text x={x2} y={y2 - 19} textAnchor="middle" fontSize="10" fill={themePalette.textMuted}>⋯</text>
                           </g>
                         )
                       })
                       return lines
                     })()}
                   </svg>
-                  {visibleCharacters.map((c) => {
+                  {treeChars.map((c) => {
                     const pos = treePositions[c.id]
                     if (!pos) return null
                     return (
@@ -3726,6 +3840,9 @@ export default function HomePage() {
                             fontFamily: "'Inter', system-ui, sans-serif",
                           }}>
                           <div style={{ fontSize: 12, fontWeight: c.significance === 'major' ? 600 : 400, color: themePalette.text, lineHeight: 1.25 }}>{c.name}</div>
+                          {c.impliedGapFrom && treeIds.has(c.impliedGapFrom) && !c.parentIds.some((pid) => treeIds.has(pid)) && (
+                            <div style={{ fontSize: 10, color: themePalette.textMuted, marginTop: 2 }}>⋯ {getCharacter(c.impliedGapFrom)?.name}'s line</div>
+                          )}
                           {characterNotes[c.id] && <div style={{ fontSize: 10, color: themePalette.textMuted, marginTop: 2 }}>📝 note</div>}
                         </button>
                         <button
@@ -3738,13 +3855,29 @@ export default function HomePage() {
                           }}>
                           ✕
                         </button>
+                        {(childMap[c.id] || []).length > 0 && c.id !== treeBranchRoot && (() => {
+                          const folded = collapsedIds.includes(c.id)
+                          return (
+                            <button
+                              title={folded ? 'Show this branch' : 'Fold this branch'}
+                              onClick={(e) => { e.stopPropagation(); toggleBranchCollapsed(c.id) }}
+                              style={{
+                                position: 'absolute', right: -8, bottom: -8, minWidth: 24, height: 24, cursor: 'pointer',
+                                borderRadius: 12, padding: folded ? '0 7px' : 0, fontSize: 11, fontWeight: 700, lineHeight: '22px',
+                                border: `1px solid ${resolvedAccent}`, background: folded ? resolvedAccent : themePalette.surface,
+                                color: folded ? themePalette.surface : themePalette.text,
+                              }}>
+                              {folded ? `+${treeDescendants(c.id).size}` : '−'}
+                            </button>
+                          )
+                        })()}
                       </div>
                     )
                   })}
                 </div>
               </div>
               <p style={{ fontSize: 12, color: themePalette.textMuted, marginTop: 8 }}>
-                Drag to pan; pinch, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses (a dashed bracket under the row links spouses who aren't side by side); dotted lines with ⋯ mean generations in between aren't individually listed. Tip: the Browse view is easier on a phone.
+                Drag to pan; pinch, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses (a dashed bracket under the row links spouses who aren't side by side); a ⋯ stub above a person means generations in between aren't individually listed (tap them to see the full dotted line back to their family line). Big branches start folded: tap the + badge on a person to open it, or − to fold it again. To read one line on its own, pick a person and choose \u201cShow only their family line\u201d. Tip: the Browse view is easier on a phone.
               </p>
             </div>
           )}
@@ -3825,6 +3958,15 @@ export default function HomePage() {
                   </button>
                 </div>
                 <p style={{ fontSize: 14, lineHeight: 1.6, color: themePalette.text, margin: '0 0 14px' }}>{c.blurb}</p>
+                {(childMap[c.id] || []).length > 0 && (
+                  <button onClick={() => showBranchInTree(c.id)}
+                    style={{
+                      cursor: 'pointer', padding: '7px 12px', borderRadius: 8, fontSize: 12, marginBottom: 14,
+                      border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
+                    }}>
+                    🌿 Show only {c.name}'s family line
+                  </button>
+                )}
 
                 {gapAncestor && (
                   <p style={{ fontSize: 12, color: themePalette.textMuted, margin: '0 0 14px', fontStyle: 'italic' }}>
