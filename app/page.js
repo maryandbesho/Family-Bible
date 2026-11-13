@@ -393,6 +393,7 @@ export default function HomePage() {
   const [treeZoom, setTreeZoom] = useState(1)
   const [treePan, setTreePan] = useState({ x: 40, y: 20 })
   const [treeDragging, setTreeDragging] = useState(false)
+  const [characterSearch, setCharacterSearch] = useState('')
 
   // Home dashboard: reading streak (auto-tracked), an editable reading
   // plan, and confession/communion logs. All personal to the signed-in
@@ -539,6 +540,18 @@ export default function HomePage() {
     window.addEventListener('resize', check)
     return () => window.removeEventListener('resize', check)
   }, [])
+
+  // On a phone the Characters tab opens in the easy "Browse" view instead of
+  // the big pan/zoom tree.
+  useEffect(() => {
+    if (window.innerWidth < 820) setCharacterView('focus')
+  }, [])
+
+  // Browse view always needs a person in focus so their notes box is
+  // loaded correctly; start at Adam until someone is picked.
+  useEffect(() => {
+    if (tab === 'characters' && characterView === 'focus' && !selectedCharacterId) openCharacter('adam')
+  }, [tab, characterView])
 
   useEffect(() => {
     try {
@@ -1180,13 +1193,159 @@ export default function HomePage() {
   const treeCanvasW = treeMaxX + TREE_NODE_W + TREE_PAD * 2
   const treeCanvasH = treeMaxY + TREE_NODE_H + TREE_PAD * 2
 
+  // ---- Family-tree connector routing ------------------------------------
+  // Spouses: side-by-side couples get a short dashed line between the boxes.
+  // A spouse who is NOT next to their partner (e.g. Jacob's four wives) gets
+  // a dashed bracket that runs UNDER the row, so it never cuts through
+  // anyone else's box. Brackets are stacked in lanes so they don't overlap.
+  const treeSpousePairs = (() => {
+    const drawn = new Set()
+    const pairs = []
+    visibleCharacters.forEach((c) => {
+      c.spouseIds.filter((sid) => visibleIds.has(sid)).forEach((sid) => {
+        const key = [c.id, sid].sort().join('|')
+        if (drawn.has(key)) return
+        drawn.add(key)
+        const p1 = treePositions[c.id]
+        const p2 = treePositions[sid]
+        if (!p1 || !p2 || p1.y !== p2.y) return
+        const [l, r] = p1.x <= p2.x ? [p1, p2] : [p2, p1]
+        pairs.push({
+          key, left: l, right: r,
+          adjacent: r.x - l.x < TREE_NODE_W + 60,
+          x1: l.x + TREE_PAD + TREE_NODE_W / 2,
+          x2: r.x + TREE_PAD + TREE_NODE_W / 2,
+          rowBottom: l.y + TREE_PAD + TREE_NODE_H,
+          arcY: null,
+        })
+      })
+    })
+    const byRow = {}
+    pairs.filter((p) => !p.adjacent).forEach((p) => { (byRow[p.left.y] = byRow[p.left.y] || []).push(p) })
+    Object.values(byRow).forEach((arr) => {
+      arr.sort((a, b) => a.x1 - b.x1)
+      const laneEnds = []
+      arr.forEach((p) => {
+        let lane = laneEnds.findIndex((end) => end < p.x1 - 4)
+        if (lane === -1) { lane = laneEnds.length; laneEnds.push(0) }
+        laneEnds[lane] = p.x2
+        p.arcY = p.rowBottom + 10 + Math.min(lane, 3) * 8
+      })
+    })
+    return pairs
+  })()
+  const treePairByKey = {}
+  treeSpousePairs.forEach((p) => { treePairByKey[p.key] = p })
+
+  // Parent -> children: one connector per family unit (a set of siblings
+  // sharing the same parent(s)): a stem from the couple, a horizontal bus,
+  // and a drop to each child. Buses that would overlap sideways are put on
+  // separate lanes, and a couple's stem starts from the spouse line itself.
+  const treeUnits = (() => {
+    const units = {}
+    visibleCharacters.forEach((c) => {
+      const kp = c.parentIds.filter((pid) => visibleIds.has(pid) && treePositions[pid])
+      if (kp.length === 0 || !treePositions[c.id]) return
+      const key = kp.slice().sort().join('|')
+      if (!units[key]) units[key] = { key, parentIds: kp, childIds: [] }
+      units[key].childIds.push(c.id)
+    })
+    const list = []
+    Object.values(units).forEach((u) => {
+      const cp = u.childIds.map((cid) => treePositions[cid])
+      const minChildTop = Math.min(...cp.map((p) => p.y)) + TREE_PAD
+      // only parents that sit above their children can draw a connector
+      const ab = u.parentIds.filter((pid) => treePositions[pid].y + TREE_PAD + TREE_NODE_H < minChildTop)
+      if (ab.length === 0) return
+      const pp = ab.map((pid) => treePositions[pid])
+      const parentMidX = pp.reduce((sum, p) => sum + p.x, 0) / pp.length + TREE_PAD + TREE_NODE_W / 2
+      let stemStart = Math.max(...pp.map((p) => p.y)) + TREE_PAD + TREE_NODE_H
+      if (ab.length === 2) {
+        const pair = treePairByKey[ab.slice().sort().join('|')]
+        if (pair) stemStart = pair.adjacent ? pair.left.y + TREE_PAD + TREE_NODE_H / 2 : pair.arcY
+      }
+      const childXs = cp.map((p) => p.x + TREE_PAD + TREE_NODE_W / 2)
+      list.push({
+        key: u.key, parentMidX, stemStart, minChildTop,
+        minX: Math.min(parentMidX, ...childXs),
+        maxX: Math.max(parentMidX, ...childXs),
+        drops: u.childIds.map((cid, i) => ({ id: cid, x: childXs[i], y: cp[i].y + TREE_PAD })),
+        busY: 0,
+      })
+    })
+    const byRow = {}
+    list.forEach((u) => { (byRow[Math.round(u.minChildTop)] = byRow[Math.round(u.minChildTop)] || []).push(u) })
+    Object.values(byRow).forEach((arr) => {
+      arr.sort((a, b) => a.minX - b.minX)
+      const laneEnds = []
+      arr.forEach((u) => {
+        let lane = laneEnds.findIndex((end) => end < u.minX - 12)
+        if (lane === -1) { lane = laneEnds.length; laneEnds.push(0) }
+        laneEnds[lane] = u.maxX
+        const wanted = u.minChildTop - 54 + Math.min(lane, 5) * 9
+        u.busY = Math.min(Math.max(wanted, u.stemStart + 14), u.minChildTop - 12)
+      })
+    })
+    return list
+  })()
+
+  // Jump from the Browse view to a person's spot in the full tree.
+  function showCharacterInTree(id) {
+    const pos = treePositions[id]
+    setCharacterView('tree')
+    setSelectedCharacterId(id)
+    if (!pos) return
+    const z = 0.8
+    const cw = Math.min(window.innerWidth, 900) - 32
+    setTreeZoom(z)
+    setTreePan({ x: cw / 2 - (pos.x + TREE_PAD + TREE_NODE_W / 2) * z, y: 120 - (pos.y + TREE_PAD) * z })
+  }
+
+  // The private-notes editor, shared by the tree/timeline detail panel and
+  // the Browse view.
+  function renderCharacterNotes(c) {
+    const isHidden = hiddenCharacterIds.includes(c.id)
+    return (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                    Your notes
+                  </div>
+                  <textarea
+                    value={characterNoteDraft}
+                    onChange={(e) => setCharacterNoteDraft(e.target.value)}
+                    placeholder="Write a private note or comment about this person..."
+                    rows={3}
+                    style={{
+                      width: '100%', boxSizing: 'border-box', padding: 10, fontSize: 13, borderRadius: 8,
+                      border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
+                      fontFamily: "'Inter', system-ui, sans-serif", resize: 'vertical',
+                    }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                    <button onClick={() => saveCharacterNote(c.id, characterNoteDraft)} disabled={savingCharacterNote}
+                      style={{
+                        cursor: savingCharacterNote ? 'default' : 'pointer', padding: '7px 16px', borderRadius: 8, fontSize: 13,
+                        border: 'none', background: resolvedAccent, color: resolvedOnAccent, fontWeight: 600,
+                        opacity: savingCharacterNote ? 0.7 : 1,
+                      }}>
+                      {savingCharacterNote ? 'Saving...' : 'Save note'}
+                    </button>
+                    <button onClick={() => toggleHiddenCharacter(c.id)}
+                      style={{ cursor: 'pointer', background: 'none', border: 'none', fontSize: 12, color: themePalette.textMuted, textDecoration: 'underline' }}>
+                      {isHidden ? 'Unhide this person' : 'Hide this person'}
+                    </button>
+                  </div>
+                </div>
+    )
+  }
+
   function prettyGroupLabel(key) {
     return key.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase())
   }
 
   function handleTreeWheel(e) {
     e.preventDefault()
-    setTreeZoom((z) => Math.min(2, Math.max(0.4, z - e.deltaY * 0.001)))
+    setTreeZoom((z) => Math.min(2, Math.max(0.2, z - e.deltaY * 0.001)))
   }
 
   // A ref (not state) so drag position survives re-renders triggered by
@@ -1205,18 +1364,51 @@ export default function HomePage() {
     treeDragStart.current = null
     setTreeDragging(false)
   }
+  // Two-finger pinch zooms around the point between the fingers; one finger pans.
+  const treePinch = useRef(null)
   function handleTreeTouchStart(e) {
+    if (e.touches.length >= 2) {
+      const a = e.touches[0], b = e.touches[1]
+      treeDragStart.current = null
+      treePinch.current = {
+        dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1,
+        zoom: treeZoom, panX: treePan.x, panY: treePan.y,
+      }
+      setTreeDragging(true)
+      return
+    }
     const t = e.touches[0]
+    treePinch.current = null
     treeDragStart.current = { x: t.clientX, y: t.clientY, panX: treePan.x, panY: treePan.y }
     setTreeDragging(true)
   }
   function handleTreeTouchMove(e) {
+    if (treePinch.current && e.touches.length >= 2) {
+      const a = e.touches[0], b = e.touches[1]
+      const p = treePinch.current
+      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      const nz = Math.min(2, Math.max(0.2, p.zoom * dist / p.dist))
+      const rect = e.currentTarget.getBoundingClientRect()
+      const mx = (a.clientX + b.clientX) / 2 - rect.left
+      const my = (a.clientY + b.clientY) / 2 - rect.top
+      const ratio = nz / p.zoom
+      setTreeZoom(nz)
+      setTreePan({ x: mx - (mx - p.panX) * ratio, y: my - (my - p.panY) * ratio })
+      return
+    }
     if (!treeDragStart.current) return
     const t = e.touches[0]
     const d = treeDragStart.current
     setTreePan({ x: d.panX + (t.clientX - d.x), y: d.panY + (t.clientY - d.y) })
   }
-  function handleTreeTouchEnd() {
+  function handleTreeTouchEnd(e) {
+    treePinch.current = null
+    if (e && e.touches && e.touches.length === 1) {
+      // one finger left after a pinch: carry on panning from it
+      const t = e.touches[0]
+      treeDragStart.current = { x: t.clientX, y: t.clientY, panX: treePan.x, panY: treePan.y }
+      return
+    }
     treeDragStart.current = null
     setTreeDragging(false)
   }
@@ -3267,7 +3459,16 @@ export default function HomePage() {
       {tab === 'characters' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button onClick={() => setCharacterView('focus')}
+                style={{
+                  cursor: 'pointer', padding: '7px 14px', borderRadius: 8, fontSize: 13,
+                  border: characterView === 'focus' ? `1px solid ${resolvedAccent}` : `1px solid ${themePalette.border}`,
+                  background: characterView === 'focus' ? themePalette.surfaceAlt : themePalette.surface,
+                  color: themePalette.text, fontWeight: characterView === 'focus' ? 600 : 400,
+                }}>
+                Browse
+              </button>
               <button onClick={() => setCharacterView('tree')}
                 style={{
                   cursor: 'pointer', padding: '7px 14px', borderRadius: 8, fontSize: 13,
@@ -3328,10 +3529,99 @@ export default function HomePage() {
             </div>
           )}
 
+          {characterView === 'focus' && (() => {
+            const f = getCharacter(selectedCharacterId || 'adam')
+            if (!f) return null
+            const keep = (list) => list.filter((x) => x && visibleIds.has(x.id))
+            const parents = keep(getParents(f.id))
+            const gapParent = f.impliedGapFrom && visibleIds.has(f.impliedGapFrom) ? getCharacter(f.impliedGapFrom) : null
+            const spouses = keep(getSpouses(f.id))
+            const kids = keep(getChildren(f.id))
+            const gapKids = visibleCharacters.filter((x) => x.impliedGapFrom === f.id)
+            const siblings = visibleCharacters.filter((x) => x.id !== f.id && f.parentIds.some((pid) => x.parentIds.includes(pid)))
+            const q = characterSearch.trim().toLowerCase()
+            const matches = q ? visibleCharacters.filter((x) => x.name.toLowerCase().includes(q)).slice(0, 8) : []
+            const eraLabel = (ERAS.find((e) => e.key === f.era) || {}).label
+            const card = (p, caption) => (
+              <button key={p.id + (caption || '')} onClick={() => { setCharacterSearch(''); openCharacter(p.id); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+                style={{
+                  cursor: 'pointer', textAlign: 'left', minHeight: 44, padding: '8px 12px', borderRadius: 10,
+                  border: `1px solid ${themePalette.border}`,
+                  background: p.significance === 'major' ? themePalette.surface : themePalette.chip,
+                  color: themePalette.text, fontFamily: "'Inter', system-ui, sans-serif",
+                }}>
+                <div style={{ fontSize: 14, fontWeight: p.significance === 'major' ? 600 : 400, lineHeight: 1.25 }}>{p.name}</div>
+                {caption && <div style={{ fontSize: 11, color: themePalette.textMuted, marginTop: 2 }}>{caption}</div>}
+                {characterNotes[p.id] && <div style={{ fontSize: 10, color: themePalette.textMuted, marginTop: 2 }}>📝 note</div>}
+              </button>
+            )
+            const section = (label, cards) => cards.length === 0 ? null : (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                  {label}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>
+                  {cards}
+                </div>
+              </div>
+            )
+            return (
+              <div style={{ maxWidth: 640 }}>
+                <input
+                  value={characterSearch}
+                  onChange={(e) => setCharacterSearch(e.target.value)}
+                  placeholder="Find a person..."
+                  style={{
+                    width: '100%', boxSizing: 'border-box', padding: '10px 12px', fontSize: 16, borderRadius: 10,
+                    border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text,
+                    marginBottom: 12,
+                  }}
+                />
+                {q && (
+                  <div style={{ marginBottom: 16 }}>
+                    {matches.length === 0
+                      ? <p style={{ fontSize: 13, color: themePalette.textMuted, margin: 0 }}>No one matches "{characterSearch}".</p>
+                      : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>{matches.map((m) => card(m))}</div>}
+                  </div>
+                )}
+
+                {section('Parents', [
+                  ...parents.map((p) => card(p)),
+                  ...(gapParent ? [card(gapParent, '⋯ line continues from here')] : []),
+                ])}
+
+                <div style={{ background: themePalette.surface, border: `2px solid ${resolvedAccent}`, borderRadius: 12, padding: 16, marginBottom: 16 }}>
+                  <h3 style={{ fontFamily: "'Lora', Georgia, serif", fontSize: 22, margin: 0, color: themePalette.text }}>{f.name}</h3>
+                  {eraLabel && <div style={{ fontSize: 12, color: themePalette.textMuted, margin: '2px 0 10px' }}>{eraLabel}</div>}
+                  <p style={{ fontSize: 14, lineHeight: 1.6, color: themePalette.text, margin: '0 0 12px' }}>{f.blurb}</p>
+                  <button onClick={() => showCharacterInTree(f.id)}
+                    style={{
+                      cursor: 'pointer', padding: '7px 12px', borderRadius: 8, fontSize: 12, marginBottom: 14,
+                      border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
+                    }}>
+                    📍 Show in family tree
+                  </button>
+                  {renderCharacterNotes(f)}
+                </div>
+
+                {section(spouses.length > 1 ? 'Spouses' : 'Spouse', spouses.map((p) => card(p)))}
+                {section('Children', [
+                  ...kids.map((p) => card(p)),
+                  ...gapKids.map((p) => card(p, '⋯ later descendant')),
+                ])}
+                {section('Brothers & sisters', siblings.map((p) => card(p)))}
+
+                <p style={{ fontSize: 12, color: themePalette.textMuted, margin: '4px 0 0' }}>
+                  Tap anyone to move through the family. A ⋯ means the generations in between aren't individually listed.
+                </p>
+              </div>
+            )
+          })()}
+
           {characterView === 'tree' && (
             <div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
-                <button onClick={() => setTreeZoom((z) => Math.max(0.4, z - 0.15))}
+                <button onClick={() => setTreeZoom((z) => Math.max(0.2, z - 0.15))}
                   style={{ cursor: 'pointer', width: 30, height: 30, borderRadius: 6, border: `1px solid ${themePalette.border}`, background: themePalette.surface, color: themePalette.text, fontSize: 16 }}>
                   −
                 </button>
@@ -3355,7 +3645,7 @@ export default function HomePage() {
                 onTouchMove={handleTreeTouchMove}
                 onTouchEnd={handleTreeTouchEnd}
                 style={{
-                  position: 'relative', overflow: 'hidden', height: 480, borderRadius: 12,
+                  position: 'relative', overflow: 'hidden', height: isWide ? 520 : '62vh', minHeight: 320, borderRadius: 12,
                   border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt,
                   cursor: treeDragging ? 'grabbing' : 'grab', touchAction: 'none',
                 }}
@@ -3367,68 +3657,29 @@ export default function HomePage() {
                   transformOrigin: '0 0',
                 }}>
                   <svg width={treeCanvasW} height={treeCanvasH} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}>
-                    {(() => {
-                      // One connector per FAMILY UNIT (a set of full siblings
-                      // sharing the same parent(s)), instead of one line per
-                      // parent-child pair - so a couple with 3 kids draws a
-                      // single stem + bus + drops, not 3 separate crossing
-                      // lines from each parent to each child.
-                      const units = {}
-                      visibleCharacters.forEach((c) => {
-                        const knownParents = c.parentIds.filter((pid) => visibleIds.has(pid))
-                        if (knownParents.length === 0) return
-                        const key = knownParents.slice().sort().join('|')
-                        if (!units[key]) units[key] = { parentIds: knownParents, childIds: [] }
-                        units[key].childIds.push(c.id)
-                      })
-                      const lines = []
-                      Object.entries(units).forEach(([key, unit]) => {
-                        const parentPositions = unit.parentIds.map((pid) => treePositions[pid]).filter(Boolean)
-                        const childPositions = unit.childIds.map((cid) => treePositions[cid]).filter(Boolean)
-                        if (parentPositions.length === 0 || childPositions.length === 0) return
-                        const parentMidX = parentPositions.reduce((s, p) => s + p.x, 0) / parentPositions.length + TREE_PAD + TREE_NODE_W / 2
-                        const parentY = parentPositions[0].y + TREE_PAD + TREE_NODE_H
-                        const childXs = childPositions.map((p) => p.x + TREE_PAD + TREE_NODE_W / 2)
-                        const childTopY = childPositions[0].y + TREE_PAD
-                        const busY = parentY + (childTopY - parentY) / 2
-                        const minChildX = Math.min(...childXs)
-                        const maxChildX = Math.max(...childXs)
-                        // stem from the parent midpoint down to the bus
-                        lines.push(<line key={`${key}-stem`} x1={parentMidX} y1={parentY} x2={parentMidX} y2={busY} stroke={themePalette.border} strokeWidth="1.5" />)
-                        // horizontal bus spanning the children (skip if only one child directly below)
-                        if (childXs.length > 1 || Math.abs(minChildX - parentMidX) > 2) {
-                          lines.push(<line key={`${key}-bus`} x1={minChildX} y1={busY} x2={maxChildX} y2={busY} stroke={themePalette.border} strokeWidth="1.5" />)
-                        }
-                        // drop from the bus down to each child
-                        childXs.forEach((x, i) => {
-                          lines.push(<line key={`${key}-drop-${unit.childIds[i]}`} x1={x} y1={busY} x2={x} y2={childTopY} stroke={themePalette.border} strokeWidth="1.5" />)
-                        })
-                      })
-                      return lines
-                    })()}
-                    {(() => {
-                      // Draw one dashed line per unique spouse pair. Characters
-                      // can have several spouses (e.g. Jacob had four), so this
-                      // walks every spouseIds entry rather than just the first.
-                      const drawn = new Set()
-                      const lines = []
-                      visibleCharacters.forEach((c) => {
-                        c.spouseIds.filter((sid) => visibleIds.has(sid)).forEach((sid) => {
-                          const pairKey = [c.id, sid].sort().join('|')
-                          if (drawn.has(pairKey)) return
-                          drawn.add(pairKey)
-                          const p1 = treePositions[c.id]
-                          const p2 = treePositions[sid]
-                          if (!p1 || !p2 || p1.y !== p2.y) return
-                          const [left, right] = p1.x <= p2.x ? [p1, p2] : [p2, p1]
-                          const y = left.y + TREE_PAD + TREE_NODE_H / 2
-                          const x1 = left.x + TREE_PAD + TREE_NODE_W
-                          const x2 = right.x + TREE_PAD
-                          lines.push(<line key={pairKey} x1={x1} y1={y} x2={x2} y2={y} stroke={resolvedAccent} strokeWidth="1.5" strokeDasharray="3,3" />)
-                        })
-                      })
-                      return lines
-                    })()}
+                    {treeUnits.map((u) => (
+                      <g key={u.key}>
+                        <line x1={u.parentMidX} y1={u.stemStart} x2={u.parentMidX} y2={u.busY} stroke={themePalette.border} strokeWidth="1.5" />
+                        {u.maxX - u.minX > 2 && (
+                          <line x1={u.minX} y1={u.busY} x2={u.maxX} y2={u.busY} stroke={themePalette.border} strokeWidth="1.5" />
+                        )}
+                        {u.drops.map((d) => (
+                          <line key={d.id} x1={d.x} y1={u.busY} x2={d.x} y2={d.y} stroke={themePalette.border} strokeWidth="1.5" />
+                        ))}
+                      </g>
+                    ))}
+                    {treeSpousePairs.map((p) => (
+                      p.adjacent ? (
+                        <line key={p.key}
+                          x1={p.left.x + TREE_PAD + TREE_NODE_W} y1={p.left.y + TREE_PAD + TREE_NODE_H / 2}
+                          x2={p.right.x + TREE_PAD} y2={p.left.y + TREE_PAD + TREE_NODE_H / 2}
+                          stroke={resolvedAccent} strokeWidth="1.5" strokeDasharray="3,3" />
+                      ) : (
+                        <path key={p.key}
+                          d={`M ${p.x1} ${p.rowBottom} L ${p.x1} ${p.arcY} L ${p.x2} ${p.arcY} L ${p.x2} ${p.rowBottom}`}
+                          stroke={resolvedAccent} strokeWidth="1.5" strokeDasharray="3,3" fill="none" strokeLinejoin="round" />
+                      )
+                    ))}
                     {(() => {
                       // Draw a "generations not shown" gap connector for any
                       // character linked via impliedGapFrom rather than a
@@ -3493,7 +3744,7 @@ export default function HomePage() {
                 </div>
               </div>
               <p style={{ fontSize: 12, color: themePalette.textMuted, marginTop: 8 }}>
-                Drag to pan, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses; dotted lines with ⋯ mean generations in between aren't individually listed.
+                Drag to pan; pinch, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses (a dashed bracket under the row links spouses who aren't side by side); dotted lines with ⋯ mean generations in between aren't individually listed. Tip: the Browse view is easier on a phone.
               </p>
             </div>
           )}
@@ -3556,7 +3807,7 @@ export default function HomePage() {
             </div>
           )}
 
-          {selectedCharacterId && (() => {
+          {selectedCharacterId && characterView !== 'focus' && (() => {
             const c = getCharacter(selectedCharacterId)
             if (!c) return null
             const parents = getParents(c.id)
@@ -3601,36 +3852,7 @@ export default function HomePage() {
                   </div>
                 )}
 
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                    Your notes
-                  </div>
-                  <textarea
-                    value={characterNoteDraft}
-                    onChange={(e) => setCharacterNoteDraft(e.target.value)}
-                    placeholder="Write a private note or comment about this person..."
-                    rows={3}
-                    style={{
-                      width: '100%', boxSizing: 'border-box', padding: 10, fontSize: 13, borderRadius: 8,
-                      border: `1px solid ${themePalette.border}`, background: themePalette.surfaceAlt, color: themePalette.text,
-                      fontFamily: "'Inter', system-ui, sans-serif", resize: 'vertical',
-                    }}
-                  />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-                    <button onClick={() => saveCharacterNote(c.id, characterNoteDraft)} disabled={savingCharacterNote}
-                      style={{
-                        cursor: savingCharacterNote ? 'default' : 'pointer', padding: '7px 16px', borderRadius: 8, fontSize: 13,
-                        border: 'none', background: resolvedAccent, color: resolvedOnAccent, fontWeight: 600,
-                        opacity: savingCharacterNote ? 0.7 : 1,
-                      }}>
-                      {savingCharacterNote ? 'Saving...' : 'Save note'}
-                    </button>
-                    <button onClick={() => toggleHiddenCharacter(c.id)}
-                      style={{ cursor: 'pointer', background: 'none', border: 'none', fontSize: 12, color: themePalette.textMuted, textDecoration: 'underline' }}>
-                      {isHidden ? 'Unhide this person' : 'Hide this person'}
-                    </button>
-                  </div>
-                </div>
+                {renderCharacterNotes(c)}
               </div>
             )
           })()}
