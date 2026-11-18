@@ -3628,6 +3628,24 @@ export default function HomePage() {
             const q = characterSearch.trim().toLowerCase()
             const matches = q ? visibleCharacters.filter((x) => x.name.toLowerCase().includes(q)).slice(0, 8) : []
             const eraLabel = (ERAS.find((e) => e.key === f.era) || {}).label
+            // ancestors from the top down to this person, following the first
+            // listed parent (or the implied "generations skipped" link)
+            const trail = []
+            {
+              let cur = f
+              const seenT = new Set([f.id])
+              while (cur) {
+                const pid = cur.parentIds.find((p) => visibleIds.has(p) && !seenT.has(p))
+                let nxt = null
+                let viaGap = false
+                if (pid) nxt = getCharacter(pid)
+                else if (cur.impliedGapFrom && visibleIds.has(cur.impliedGapFrom) && !seenT.has(cur.impliedGapFrom)) { nxt = getCharacter(cur.impliedGapFrom); viaGap = true }
+                if (!nxt) break
+                trail.unshift({ ch: nxt, gapBelow: viaGap })
+                seenT.add(nxt.id)
+                cur = nxt
+              }
+            }
             const card = (p, caption) => (
               <button key={p.id + (caption || '')} onClick={() => { setCharacterSearch(''); openCharacter(p.id); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                 style={{
@@ -3707,6 +3725,30 @@ export default function HomePage() {
                   ...gapKids.map((p) => card(p, '⋯ later descendant')),
                 ])}
                 {section('Brothers & sisters', siblings.map((p) => card(p)))}
+
+                {trail.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: themePalette.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                      Family line
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
+                      {trail.map((t) => (
+                        <Fragment key={t.ch.id}>
+                          <button onClick={() => { openCharacter(t.ch.id); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+                            style={{
+                              cursor: 'pointer', padding: '5px 9px', borderRadius: 14, fontSize: 12,
+                              border: `1px solid ${themePalette.border}`, background: themePalette.chip, color: themePalette.text,
+                            }}>
+                            {t.ch.name}
+                          </button>
+                          <span style={{ fontSize: 12, color: themePalette.textMuted }}>{t.gapBelow ? '⋯' : '›'}</span>
+                        </Fragment>
+                      ))}
+                      <span style={{ fontSize: 12, fontWeight: 600, color: themePalette.text, padding: '5px 4px' }}>{f.name}</span>
+                    </div>
+                    <p style={{ fontSize: 11, color: themePalette.textMuted, margin: '6px 0 0' }}>Follows each person's first listed parent. A ⋯ means generations in between aren't individually listed.</p>
+                  </div>
+                )}
 
                 <p style={{ fontSize: 12, color: themePalette.textMuted, margin: '4px 0 0' }}>
                   Tap anyone to move through the family. A ⋯ means the generations in between aren't individually listed.
@@ -3812,10 +3854,11 @@ export default function HomePage() {
                         const midX = (x1 + x2) / 2
                         const midY = (y1 + y2) / 2
                         const isSel = selectedCharacterId === c.id || selectedCharacterId === c.impliedGapFrom
+                        const isChain = (childMap[c.id] || []).length > 0
                         lines.push(
                           <g key={`gap-${c.id}`}>
-                            {isSel && (
-                              <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} stroke={resolvedAccent} strokeWidth="2" strokeDasharray="2,4" strokeLinecap="round" fill="none" />
+                            {(isSel || isChain) && (
+                              <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} stroke={isSel ? resolvedAccent : themePalette.textMuted} strokeWidth={isSel ? 2 : 1.5} strokeDasharray="2,4" strokeLinecap="round" fill="none" />
                             )}
                             <line x1={x2} y1={y2 - 22} x2={x2} y2={y2} stroke={themePalette.textMuted} strokeWidth="1.5" strokeDasharray="1,4" strokeLinecap="round" />
                             <circle cx={x2} cy={y2 - 22} r="8" fill={themePalette.surfaceAlt} stroke={themePalette.textMuted} strokeWidth="1" />
@@ -3877,7 +3920,7 @@ export default function HomePage() {
                 </div>
               </div>
               <p style={{ fontSize: 12, color: themePalette.textMuted, marginTop: 8 }}>
-                Drag to pan; pinch, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses (a dashed bracket under the row links spouses who aren't side by side); a ⋯ stub above a person means generations in between aren't individually listed (tap them to see the full dotted line back to their family line). Big branches start folded: tap the + badge on a person to open it, or − to fold it again. To read one line on its own, pick a person and choose \u201cShow only their family line\u201d. Tip: the Browse view is easier on a phone.
+                Drag to pan; pinch, scroll or use +/− to zoom. Solid lines connect parent and child; dashed lines connect spouses (a dashed bracket under the row links spouses who aren't side by side); a dotted line (or a ⋯ stub above a person) means generations in between aren't individually listed; tap a stub person to see the full dotted line back to their family line. In Browse, \u201cFamily line\u201d lists someone's ancestors from the top. Big branches start folded: tap the + badge on a person to open it, or − to fold it again. To read one line on its own, pick a person and choose \u201cShow only their family line\u201d. Tip: the Browse view is easier on a phone.
               </p>
             </div>
           )}
